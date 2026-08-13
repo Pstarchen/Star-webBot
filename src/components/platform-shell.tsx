@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Select from "@radix-ui/react-select";
@@ -13,12 +12,14 @@ import {
   Check,
   ChevronDown,
   Code2,
+  CreditCard,
   LayoutDashboard,
   LogOut,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Settings2,
   ShieldCheck,
   Users,
   X,
@@ -29,14 +30,17 @@ import { BrandMark } from "@/components/brand-mark";
 import { DashboardOverview } from "@/components/dashboard-overview";
 import { DeveloperView } from "@/components/developer-view";
 import { EventsView } from "@/components/events-view";
+import { MembershipView } from "@/components/membership-view";
 import { PluginsView } from "@/components/plugins-view";
+import { SiteFooter } from "@/components/site-footer";
+import { SystemSettingsView } from "@/components/system-settings-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import type { Bot, EventLog, Plugin, SessionUser, TeamMember } from "@/types/platform";
+import type { Bot, EventLog, PluginCenterData, SessionUser, SitePublicSettings, TeamMember } from "@/types/platform";
 
-type ViewKey = "overview" | "bots" | "events" | "plugins" | "developer" | "team" | "admin";
+type ViewKey = "overview" | "bots" | "events" | "plugins" | "developer" | "membership" | "team" | "admin" | "settings";
 
 type NavItem = {
   key: ViewKey;
@@ -48,10 +52,12 @@ const viewMeta: Record<ViewKey, { label: string; description: string }> = {
   overview: { label: "工作台总览", description: "跨机器人运行状态与实时业务指标" },
   bots: { label: "机器人实例", description: "管理应用凭据、连接和消息能力" },
   events: { label: "事件中心", description: "追踪 WebSocket、Webhook 与 API 请求链路" },
-  plugins: { label: "SDK 应用", description: "创建扩展应用并管理事件消费" },
-  developer: { label: "开发者中心", description: "SDK 接入、API 调试与开发工具" },
+  plugins: { label: "插件中心", description: "市场发现、插件安装与机器人运行配置" },
+  developer: { label: "开发者中心", description: "插件 SDK、QQ OpenAPI 调试与开发工具" },
+  membership: { label: "会员与账单", description: "购买会员套餐、查看权益有效期和支付订单" },
   team: { label: "团队成员", description: "角色、协作与访问控制" },
   admin: { label: "系统与配额", description: "用户机器人上限与安全策略" },
+  settings: { label: "系统设置", description: "站点品牌、QQ 登录、支付渠道与套餐定价" },
 };
 
 const workspaceNav: NavItem[] = [
@@ -61,7 +67,7 @@ const workspaceNav: NavItem[] = [
 ];
 
 const buildNav: NavItem[] = [
-  { key: "plugins", label: "SDK 应用", icon: Blocks },
+  { key: "plugins", label: "插件中心", icon: Blocks },
   { key: "developer", label: "开发者中心", icon: Code2 },
 ];
 
@@ -232,42 +238,47 @@ export function PlatformShell({
   user,
   initialBots,
   initialEvents,
-  initialPlugins,
+  initialPluginCenter,
   initialMembers,
+  site,
 }: {
   user: SessionUser;
   initialBots: Bot[];
   initialEvents: EventLog[];
-  initialPlugins: Plugin[];
+  initialPluginCenter: PluginCenterData;
   initialMembers: TeamMember[];
+  site: SitePublicSettings;
 }) {
-  const router = useRouter();
   const [activeView, setActiveView] = useState<ViewKey>("overview");
+  const [currentUser, setCurrentUser] = useState<SessionUser>(user);
+  const [currentSite, setCurrentSite] = useState<SitePublicSettings>(site);
   const [bots, setBots] = useState<Bot[]>(initialBots);
   const [events, setEvents] = useState<EventLog[]>(initialEvents);
-  const [plugins, setPlugins] = useState<Plugin[]>(initialPlugins);
+  const [pluginCenter, setPluginCenter] = useState<PluginCenterData>(initialPluginCenter);
   const [members, setMembers] = useState<TeamMember[]>(initialMembers);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
   const [addBotOpen, setAddBotOpen] = useState(false);
   const meta = viewMeta[activeView];
-  const effectiveQuota = members.find((member) => member.id === user.id)?.botQuota ?? user.botQuota;
+  const effectiveQuota = members.find((member) => member.id === currentUser.id)?.botQuota ?? currentUser.botQuota;
   const quotaUsage = effectiveQuota ? Math.min(100, (bots.length / effectiveQuota) * 100) : 100;
 
   useEffect(() => {
     let cancelled = false;
 
     async function refresh() {
-      const [botsResponse, eventsResponse, pluginsResponse, usersResponse] = await Promise.all([
+      const [botsResponse, eventsResponse, pluginCenterResponse, usersResponse] = await Promise.all([
         fetch("/api/bots", { cache: "no-store" }),
         fetch("/api/events?limit=100", { cache: "no-store" }),
-        fetch("/api/plugins", { cache: "no-store" }),
+        fetch("/api/plugin-center", { cache: "no-store" }),
         fetch("/api/users", { cache: "no-store" }),
       ]);
       if (cancelled) return;
       if (botsResponse.ok) setBots(((await botsResponse.json()) as { bots: Bot[] }).bots);
       if (eventsResponse.ok) setEvents(((await eventsResponse.json()) as { events: EventLog[] }).events);
-      if (pluginsResponse.ok) setPlugins(((await pluginsResponse.json()) as { plugins: Plugin[] }).plugins);
+      if (pluginCenterResponse.ok) setPluginCenter(await pluginCenterResponse.json() as PluginCenterData);
       if (usersResponse.ok) setMembers(((await usersResponse.json()) as { users: TeamMember[] }).users);
     }
 
@@ -278,29 +289,46 @@ export function PlatformShell({
     };
   }, []);
 
+  useEffect(() => {
+    document.title = currentSite.siteName;
+    if (!currentSite.faviconUrl) return;
+    let icon = document.querySelector<HTMLLinkElement>("link[rel='icon']");
+    if (!icon) {
+      icon = document.createElement("link");
+      icon.rel = "icon";
+      document.head.appendChild(icon);
+    }
+    icon.href = currentSite.faviconUrl;
+  }, [currentSite]);
+
   function navigate(view: string) {
     setActiveView(view as ViewKey);
     setMobileOpen(false);
   }
 
-  async function togglePlugin(id: string) {
-    const plugin = plugins.find((item) => item.id === id);
-    if (!plugin) return;
-    const enabled = !plugin.enabled;
-    const response = await fetch("/api/plugins/" + id, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled }),
-    });
-    const body = await response.json().catch(() => ({})) as { message?: string };
-    if (!response.ok) throw new Error(body.message || "SDK 应用状态更新失败");
-    setPlugins((current) => current.map((item) => item.id === id ? { ...item, enabled } : item));
+  async function refreshPluginCenter() {
+    const response = await fetch("/api/plugin-center", { cache: "no-store" });
+    if (!response.ok) throw new Error("插件中心刷新失败");
+    setPluginCenter(await response.json() as PluginCenterData);
   }
 
   async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/login");
-    router.refresh();
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError("");
+    try {
+      const response = await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const body = await response.json().catch(() => ({})) as { message?: string };
+      if (!response.ok) throw new Error(body.message || "退出登录失败");
+      window.location.replace("/login");
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : "退出登录失败，请重试");
+      setLoggingOut(false);
+    }
   }
 
   function renderNavItem(item: NavItem, compact = false) {
@@ -335,9 +363,13 @@ export function PlatformShell({
   }
 
   function renderSidebar(compact = false, mobile = false) {
+    const accountNav: NavItem[] = [
+      { key: "membership", label: "会员与账单", icon: CreditCard },
+    ];
     const adminNav: NavItem[] = [
       { key: "team", label: "团队成员", icon: Users },
       { key: "admin", label: "系统与配额", icon: ShieldCheck },
+      { key: "settings", label: "系统设置", icon: Settings2 },
     ];
 
     const group = (label: string, items: NavItem[]) => (
@@ -350,7 +382,7 @@ export function PlatformShell({
     return (
       <>
         <div className={cn("flex h-14 items-center border-b", compact ? "justify-center px-2" : "justify-between px-4")}>
-          <BrandMark compact={compact} />
+          <BrandMark compact={compact} site={currentSite} />
           {mobile && (
             <Dialog.Close asChild>
               <Button variant="ghost" size="icon" aria-label="关闭导航"><X size={18} /></Button>
@@ -360,7 +392,8 @@ export function PlatformShell({
         <nav className="flex-1 overflow-y-auto px-3 py-5">
           {group("工作区", workspaceNav)}
           {group("开发", buildNav)}
-          {user.role === "admin" && group("管理", adminNav)}
+          {group("账户", accountNav)}
+          {currentUser.role === "admin" && group("管理", adminNav)}
         </nav>
         <div className="border-t p-3">
           {compact ? (
@@ -441,21 +474,26 @@ export function PlatformShell({
                 <DropdownMenu.Trigger asChild>
                   <Button variant="outline" className="h-9 gap-2 px-2">
                     <span className="grid h-6 w-6 place-items-center rounded-md bg-primary text-[11px] font-semibold text-primary-foreground">
-                      {user.name.slice(0, 1)}
+                      {currentUser.name.slice(0, 1)}
                     </span>
-                    <span className="hidden max-w-28 truncate text-xs sm:block">{user.name}</span>
+                    <span className="hidden max-w-28 truncate text-xs sm:block">{currentUser.name}</span>
                     <ChevronDown size={13} className="text-muted-foreground" />
                   </Button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Portal>
                   <DropdownMenu.Content align="end" sideOffset={8} className="z-50 w-56 rounded-md border bg-popover p-1 text-popover-foreground shadow-lg">
                     <div className="border-b px-2 py-2.5">
-                      <div className="text-sm font-medium">{user.name}</div>
-                      <div className="mt-1 truncate text-xs text-muted-foreground">{user.email}</div>
-                      <Badge variant="outline" className="mt-2">{user.membershipName}</Badge>
+                      <div className="text-sm font-medium">{currentUser.name}</div>
+                      <div className="mt-1 truncate text-xs text-muted-foreground">{currentUser.email}</div>
+                      <Badge variant="outline" className="mt-2">{currentUser.membershipName}</Badge>
                     </div>
-                    <DropdownMenu.Item onSelect={() => void logout()} className="mt-1 flex cursor-default items-center gap-2 rounded-sm px-2 py-2 text-sm text-red-600 outline-none data-[highlighted]:bg-red-50">
-                      <LogOut size={15} />退出登录
+                    {logoutError && <div role="alert" className="mx-1 mt-1 rounded-sm bg-red-50 px-2.5 py-2 text-[11px] leading-4 text-red-700">{logoutError}</div>}
+                    <DropdownMenu.Item
+                      disabled={loggingOut}
+                      onSelect={(event) => { event.preventDefault(); void logout(); }}
+                      className="mt-1 flex cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm text-red-600 outline-none data-[disabled]:cursor-wait data-[disabled]:opacity-60 data-[highlighted]:bg-red-50"
+                    >
+                      <LogOut size={15} />{loggingOut ? "正在退出..." : "退出登录"}
                     </DropdownMenu.Item>
                   </DropdownMenu.Content>
                 </DropdownMenu.Portal>
@@ -485,11 +523,17 @@ export function PlatformShell({
                 }}
               />
             )}
-            {activeView === "plugins" && <PluginsView bots={bots} plugins={plugins} onToggle={togglePlugin} onCreated={(plugin) => setPlugins((current) => [plugin, ...current])} onDeleted={(pluginId) => setPlugins((current) => current.filter((plugin) => plugin.id !== pluginId))} />}
+            {activeView === "plugins" && <PluginsView bots={bots} data={pluginCenter} userRole={currentUser.role} onRefresh={refreshPluginCenter} />}
             {activeView === "developer" && <DeveloperView bots={bots} />}
+            {activeView === "membership" && <MembershipView user={currentUser} onMembershipChange={({ plan, botQuota }) => {
+              setCurrentUser((value) => ({ ...value, membershipPlan: plan.id, membershipName: plan.name, botQuota }));
+              setMembers((current) => current.map((member) => member.id === currentUser.id ? { ...member, membershipPlan: plan.id, membershipName: plan.name, botQuota } : member));
+            }} />}
             {activeView === "team" && <TeamView members={members} />}
-            {activeView === "admin" && user.role === "admin" && <AdminView currentUserId={user.id} initialMembers={members} onMembersChange={setMembers} />}
+            {activeView === "admin" && currentUser.role === "admin" && <AdminView currentUserId={currentUser.id} initialMembers={members} onMembersChange={setMembers} />}
+            {activeView === "settings" && currentUser.role === "admin" && <SystemSettingsView onSiteChange={setCurrentSite} />}
           </main>
+          <SiteFooter site={currentSite} />
         </div>
 
         <AddBotDialog

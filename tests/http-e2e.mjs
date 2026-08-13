@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
+import { strToU8, zipSync } from "fflate";
 import { StarBotClient } from "../sdk/node/index.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
@@ -150,6 +151,10 @@ async function runAssertions() {
   assert.equal(anonymousMultipart.status, 401);
   results.push("anonymous bot multipart is rejected");
 
+  const anonymousPluginCenter = await fetch(`${baseUrl}/api/plugin-center`);
+  assert.equal(anonymousPluginCenter.status, 401);
+  results.push("anonymous plugin center access is rejected");
+
   const registered = await jsonResponse("/api/auth/register", {
     method: "POST",
     headers: originHeaders,
@@ -196,6 +201,167 @@ async function runAssertions() {
   const adminId = adminLogin.body.user.id;
   const adminCookie = sessionCookie(adminLogin.response);
   results.push("administrator login succeeds");
+
+  const regularSettings = await jsonResponse("/api/system-settings", { headers: { Cookie: userCookie } });
+  assert.equal(regularSettings.response.status, 403);
+  const regularOrders = await jsonResponse("/api/membership/orders", { headers: { Cookie: userCookie } });
+  assert.equal(regularOrders.response.status, 403);
+  const deniedSiteUpdate = await jsonResponse("/api/system-settings", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({
+      section: "site",
+      siteName: "Unauthorized Site",
+      siteTagline: "Unauthorized",
+      siteDescription: "This update must never be accepted by the server.",
+      icpCode: "",
+      icpUrl: "",
+      policeCode: "",
+      policeUrl: "",
+      copyrightText: "",
+    }),
+  });
+  assert.equal(deniedSiteUpdate.response.status, 403);
+  results.push("regular users cannot read or mutate administrative billing settings");
+
+  const siteUpdate = await jsonResponse("/api/system-settings", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({
+      section: "site",
+      siteName: "StarBot E2E",
+      siteTagline: "QQ Bot Operations",
+      siteDescription: "用于端到端验证的多机器人管理与会员支付平台。",
+      icpCode: "京ICP备12345678号",
+      icpUrl: "https://beian.miit.gov.cn/",
+      policeCode: "京公网安备110000000001号",
+      policeUrl: "https://www.beian.gov.cn/",
+      copyrightText: "StarBot E2E",
+    }),
+  });
+  assert.equal(siteUpdate.response.status, 200);
+  assert.equal(siteUpdate.body.settings.site.siteName, "StarBot E2E");
+  const publicSettings = await jsonResponse("/api/public-settings");
+  assert.equal(publicSettings.response.status, 200);
+  assert.equal(publicSettings.body.settings.icpCode, "京ICP备12345678号");
+
+  const logoBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  const deniedLogo = await fetch(`${baseUrl}/api/system-settings/assets/logo`, {
+    method: "PUT",
+    headers: { Origin: baseUrl, Cookie: userCookie, "Content-Type": "image/png" },
+    body: logoBytes,
+  });
+  assert.equal(deniedLogo.status, 403);
+  const logoUpload = await jsonResponse("/api/system-settings/assets/logo", {
+    method: "PUT",
+    headers: { Origin: baseUrl, Cookie: adminCookie, "Content-Type": "image/png" },
+    body: logoBytes,
+  });
+  assert.equal(logoUpload.response.status, 200);
+  const publicLogo = await fetch(`${baseUrl}/api/site-assets/logo`);
+  assert.equal(publicLogo.status, 200);
+  assert.equal(publicLogo.headers.get("content-type"), "image/png");
+  assert.deepEqual(Buffer.from(await publicLogo.arrayBuffer()), logoBytes);
+  const faviconUpload = await jsonResponse("/api/system-settings/assets/favicon", {
+    method: "PUT",
+    headers: { Origin: baseUrl, Cookie: adminCookie, "Content-Type": "image/png" },
+    body: logoBytes,
+  });
+  assert.equal(faviconUpload.response.status, 200);
+  const publicFavicon = await fetch(`${baseUrl}/api/site-assets/favicon`);
+  assert.equal(publicFavicon.status, 200);
+  assert.equal(publicFavicon.headers.get("content-type"), "image/png");
+  assert.deepEqual(Buffer.from(await publicFavicon.arrayBuffer()), logoBytes);
+  const settingsWithAssets = await jsonResponse("/api/public-settings");
+  assert.equal(settingsWithAssets.body.settings.logoUrl, "/api/site-assets/logo");
+  assert.equal(settingsWithAssets.body.settings.faviconUrl, "/api/site-assets/favicon");
+  results.push("administrator branding, filing information, logo, and favicon persist publicly");
+
+  const qqSecret = "e2e-qq-login-secret";
+  const qqSettings = await jsonResponse("/api/system-settings", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({
+      section: "qq",
+      enabled: false,
+      appId: "e2e-qq-login-app",
+      appSecret: qqSecret,
+      redirectUri: `${baseUrl}/api/auth/qq/callback`,
+    }),
+  });
+  assert.equal(qqSettings.response.status, 200);
+  assert.equal(qqSettings.body.settings.qq.appSecretConfigured, true);
+  assert.equal(JSON.stringify(qqSettings.body).includes(qqSecret), false);
+
+  const paymentSettings = await jsonResponse("/api/system-settings", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({
+      section: "payment",
+      enabled: true,
+      provider: "sandbox",
+      epayGatewayUrl: "",
+      epayPid: "",
+      manualInstructions: "",
+    }),
+  });
+  assert.equal(paymentSettings.response.status, 400);
+
+  const manualPaymentSettings = await jsonResponse("/api/system-settings", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({
+      section: "payment",
+      enabled: true,
+      provider: "manual",
+      epayGatewayUrl: "",
+      epayPid: "",
+      manualInstructions: "E2E 人工收款验证",
+    }),
+  });
+  assert.equal(manualPaymentSettings.response.status, 200);
+  assert.equal(manualPaymentSettings.body.settings.payment.provider, "manual");
+
+  const planList = await jsonResponse("/api/membership-plans", { headers: { Cookie: adminCookie } });
+  const proPlan = planList.body.plans.find((plan) => plan.id === "pro");
+  const pricedPlan = await jsonResponse("/api/membership-plans", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({ ...proPlan, monthlyPriceCents: 3100 }),
+  });
+  assert.equal(pricedPlan.response.status, 200);
+  assert.equal(pricedPlan.body.plan.monthlyPriceCents, 3100);
+
+  const purchase = await jsonResponse("/api/membership/orders", {
+    method: "POST",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ planId: "pro", billingCycle: "monthly", paymentChannel: "alipay", amountCents: 1 }),
+  });
+  assert.equal(purchase.response.status, 201);
+  assert.equal(purchase.body.order.status, "pending");
+  assert.equal(purchase.body.order.amountCents, 3100);
+  assert.equal(purchase.body.order.paymentChannel, "manual");
+  const userConfirmation = await jsonResponse(`/api/membership/orders/${purchase.body.order.id}/confirm`, {
+    method: "POST",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ providerTradeNo: "forged-user-confirmation" }),
+  });
+  assert.equal(userConfirmation.response.status, 403);
+  const adminConfirmation = await jsonResponse(`/api/membership/orders/${purchase.body.order.id}/confirm`, {
+    method: "POST",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({ providerTradeNo: "e2e-manual-trade", note: "E2E 管理员确认到账" }),
+  });
+  assert.equal(adminConfirmation.response.status, 200);
+  assert.equal(adminConfirmation.body.order.status, "paid");
+  assert.equal(adminConfirmation.body.membership.plan.id, "pro");
+  assert.equal(adminConfirmation.body.membership.botQuota, 5);
+  const membershipCenter = await jsonResponse("/api/membership", { headers: { Cookie: userCookie } });
+  assert.equal(membershipCenter.response.status, 200);
+  assert.equal(membershipCenter.body.current.plan.id, "pro");
+  assert.ok(membershipCenter.body.current.expiresAt);
+  assert.equal(membershipCenter.body.orders[0].amountCents, 3100);
+  results.push("production rejects sandbox and administrator-confirmed orders use server pricing");
 
   for (const [requestPath, body] of [
     [`/api/users/${userId}/membership`, { planId: "pro" }],
@@ -293,6 +459,95 @@ async function runAssertions() {
   assert.equal(serializedBot.includes(encryptedSecret), false);
   results.push("bot API returns shard and protected webhook fields");
 
+  const initialPluginCenter = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
+  assert.equal(initialPluginCenter.response.status, 200);
+  assert.ok(initialPluginCenter.body.marketplace.some((item) => item.slug === "keyword-reply"));
+  assert.deepEqual(initialPluginCenter.body.installations, []);
+  results.push("plugin center exposes persisted marketplace listings");
+
+  const hostedManifest = {
+    schemaVersion: 1,
+    id: `e2e-counter-${randomUUID()}`,
+    name: "E2E 托管计数器",
+    version: "1.0.0",
+    description: "验证插件导入、配置、事件执行和市场审核的端到端流程。",
+    author: "E2E Developer",
+    category: "自动化",
+    tags: ["E2E"],
+    entry: "index.js",
+    events: ["C2C_MESSAGE_CREATE"],
+    permissions: ["storage:kv", "log:write"],
+    commands: [{ name: "计数", description: "记录收到的单聊事件" }],
+    configSchema: [{ key: "step", label: "步长", type: "number", required: true, default: 1, min: 1, max: 10 }],
+  };
+  const hostedPackage = zipSync({
+    "starbot.plugin.json": strToU8(JSON.stringify(hostedManifest)),
+    "index.js": strToU8(`StarBot.definePlugin({ onEvent(event, sdk) {
+      sdk.kv.set("seen", sdk.kv.get("seen", 0) + sdk.config.step);
+      sdk.log.info("handled", event.type);
+    }});`),
+  });
+  const crossOriginImport = await jsonResponse("/api/plugin-projects/import", {
+    method: "POST",
+    headers: { Origin: "https://attacker.example", "Content-Type": "application/zip", Cookie: userCookie },
+    body: hostedPackage,
+  });
+  assert.equal(crossOriginImport.response.status, 403);
+  const importedPlugin = await jsonResponse("/api/plugin-projects/import", {
+    method: "POST",
+    headers: { Origin: baseUrl, "Content-Type": "application/zip", Cookie: userCookie },
+    body: hostedPackage,
+  });
+  assert.equal(importedPlugin.response.status, 201);
+  assert.equal(importedPlugin.body.manifest.id, hostedManifest.id);
+  const hostedProjectId = importedPlugin.body.projectId;
+  const hostedVersionId = importedPlugin.body.versionId;
+  results.push("trusted ZIP import creates an isolated private plugin version");
+
+  const installedPlugin = await jsonResponse("/api/plugin-installations", {
+    method: "POST",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ projectId: hostedProjectId, versionId: hostedVersionId, botId, priority: 15 }),
+  });
+  assert.equal(installedPlugin.response.status, 201);
+  const installationId = installedPlugin.body.installationId;
+  const duplicateInstall = await jsonResponse("/api/plugin-installations", {
+    method: "POST",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ projectId: hostedProjectId, versionId: hostedVersionId, botId, priority: 15 }),
+  });
+  assert.equal(duplicateInstall.response.status, 409);
+  const configuredPlugin = await jsonResponse(`/api/plugin-installations/${installationId}`, {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ enabled: true, priority: 12, config: { step: 4 } }),
+  });
+  assert.equal(configuredPlugin.response.status, 200);
+  results.push("plugins install once per bot and validate per-installation configuration");
+
+  const reviewRequested = await jsonResponse(`/api/plugin-projects/${hostedProjectId}/review`, {
+    method: "POST",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ versionId: hostedVersionId }),
+  });
+  assert.equal(reviewRequested.response.status, 201);
+  const reviewId = reviewRequested.body.reviewId;
+  const userReviewDenied = await jsonResponse(`/api/plugin-reviews/${reviewId}`, {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ approved: true }),
+  });
+  assert.equal(userReviewDenied.response.status, 403);
+  const approvedReview = await jsonResponse(`/api/plugin-reviews/${reviewId}`, {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({ approved: true, featured: true }),
+  });
+  assert.equal(approvedReview.response.status, 200);
+  const publishedCenter = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
+  assert.ok(publishedCenter.body.marketplace.some((item) => item.id === hostedProjectId && item.featured));
+  results.push("only administrators can approve plugin marketplace publication");
+
   const sdkAppCreated = await jsonResponse("/api/plugins", {
     method: "POST",
     headers: { ...originHeaders, Cookie: userCookie },
@@ -375,6 +630,20 @@ async function runAssertions() {
   });
   assert.equal(qqEvent.response.status, 200);
 
+  const centerAfterEvent = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
+  const hostedInstallation = centerAfterEvent.body.installations.find((item) => item.id === installationId);
+  assert.equal(hostedInstallation.enabled, true);
+  assert.equal(hostedInstallation.priority, 12);
+  assert.equal(hostedInstallation.config.step, 4);
+  assert.equal(hostedInstallation.lastRun.status, "success");
+  const pluginDatabase = new Database(databasePath, { readonly: true });
+  const storedCounter = pluginDatabase.prepare("SELECT value_json FROM plugin_kv WHERE installation_id = ? AND key = 'seen'").get(installationId);
+  const storedRun = pluginDatabase.prepare("SELECT status, action_count FROM plugin_runs WHERE installation_id = ? ORDER BY created_at DESC LIMIT 1").get(installationId);
+  pluginDatabase.close();
+  assert.deepEqual(storedCounter, { value_json: "4" });
+  assert.deepEqual(storedRun, { status: "success", action_count: 1 });
+  results.push("QQ webhook events execute hosted plugins and persist KV and run records");
+
   const sdk = new StarBotClient({ platformUrl: baseUrl, pluginId, secret: pluginSecret });
   const pulled = await sdk.pullEvents({ limit: 10, waitMs: 0 });
   assert.equal(pulled.events.length, 1);
@@ -404,6 +673,15 @@ async function runAssertions() {
   const sdkAppsAfterDelete = await jsonResponse("/api/plugins", { headers: { Cookie: userCookie } });
   assert.equal(sdkAppsAfterDelete.body.plugins.some((item) => item.id === pluginId), false);
   results.push("SDK app deletion revokes access and releases the app slot");
+
+  const uninstalledHostedPlugin = await jsonResponse(`/api/plugin-installations/${installationId}`, {
+    method: "DELETE",
+    headers: { Origin: baseUrl, Cookie: userCookie },
+  });
+  assert.equal(uninstalledHostedPlugin.response.status, 200);
+  const centerAfterUninstall = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
+  assert.equal(centerAfterUninstall.body.installations.some((item) => item.id === installationId), false);
+  results.push("hosted plugin uninstall removes its installation-scoped data");
 
   const suspend = await jsonResponse(`/api/users/${userId}/access`, {
     method: "PATCH",

@@ -7,6 +7,12 @@ export async function POST(request: Request) {
   catch { return NextResponse.json({ message: "请求来源不受信任" }, { status: 403 }); }
   await deleteCurrentSession();
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(sessionCookieName, "", { path: "/", maxAge: 0 });
+  response.cookies.set(sessionCookieName, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 0,
+  });
   return response;
 }

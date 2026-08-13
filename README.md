@@ -6,7 +6,9 @@
 
 - 邮箱注册/登录和可选 QQ OAuth 登录；密码使用 scrypt，登录会话使用 HttpOnly Cookie。
 - 登录/注册限流、会话轮换、来源校验和管理员权限服务端校验。
-- 免费版、专业版、团队版会员套餐；套餐定义机器人、SDK 应用和事件保留额度。
+- 免费版、专业版、团队版会员套餐；套餐定义机器人、插件安装和事件保留额度。
+- 管理员可在控制台配置网站名称、标语、介绍、Logo、favicon、ICP备案号、网安备案号和版权信息。
+- 管理员可维护月付、季付、年付价格，并配置易支付兼容网关、人工审核或开发沙箱；支付成功后自动发放并顺延会员有效期。
 - 管理员可分配套餐、覆盖单用户机器人配额、调整角色并停用账号。
 - 添加机器人时真实验证 AppID/Client Secret，Secret 使用 AES-256-GCM 加密。
 - 机器人默认使用 WebSocket，也可选择 QQ 官方 Webhook 接入。WebSocket 按官方建议分片数建立完整连接组，支持服务端 Intents 策略、Identify 频控、Heartbeat、ACK 超时、Resume、抖动退避和重启自动恢复。
@@ -14,8 +16,10 @@
 - Gateway 事件持久化到 SQLite，并按会员套餐自动清理过期记录。
 - 支持单聊/群聊消息调试、JSON REST 请求台、原始 multipart 代理和 200MB 富媒体分片上传。
 - 支持 QQ 官方 Webhook 接入：每个机器人提供不可猜测的回调地址，完成 Ed25519 challenge、签名校验和事件去重。
-- SDK 应用通过签名长轮询消费持久事件，支持 60 秒处理租约、ACK、崩溃重投和最多 5 次领取。
-- SDK 可通过 HMAC、Nonce、防重放和权限控制调用绑定机器人的 JSON/multipart QQ OpenAPI，无需接触机器人 Secret，也不要求开发者提供公网 Webhook。
+- 开发者使用 `sdk/plugin` 编写插件并构建 ZIP，导入后由平台管理项目、版本、机器人安装、动态配置、优先级、启停、KV 和运行记录。
+- 托管插件在 QuickJS 中隔离运行，只提交受权限控制的回复、QQ OpenAPI、KV 和日志动作，不接触机器人 Secret、宿主文件系统或网络。
+- 插件市场支持搜索分类、私有安装、开发者上架申请和管理员审核；内置官方关键词回复插件来自数据库，不是前端演示数据。
+- 旧 `sdk/node` 长轮询远程应用接口保留为兼容能力，支持 HMAC、Nonce、防重放、事件租约和受控 OpenAPI。
 - Radix UI + shadcn 风格响应式控制台，支持 240/64px 侧栏、移动抽屉和 reduced-motion。
 
 ## 本地启动
@@ -45,29 +49,48 @@ npm run dev
 
 访问 [http://localhost:3000](http://localhost:3000)。
 
+## 系统设置
+
+使用管理员账号进入控制台，在“管理 -> 系统设置”完成以下配置：
+
+- **站点**：网站名称、标语、介绍、Logo、favicon、ICP/网安备案和版权信息。
+- **QQ 登录**：QQ 互联网站应用 AppID、App Secret 和回调地址。这里不是 QQ 机器人 AppID。
+- **会员支付**：支付开关、支付模式和渠道参数。
+- **套餐与订单**：免费/专业/团队套餐额度与月、季、年价格，以及人工订单到账审核。
+
+Logo 和 favicon 支持 PNG、JPEG、WebP，favicon 额外支持 ICO，单个文件最大 512KB。QQ App Secret 和支付密钥只加密保存在服务端，后台不会回显明文。
+
 ## QQ 登录
 
-在 QQ 互联创建网站应用，并把回调地址配置为：
+推荐在“系统设置 -> QQ 登录”中配置。也可通过以下环境变量作为首次部署兼容回退：
 
 ```env
 QQ_LOGIN_APP_ID=你的AppID
 QQ_LOGIN_APP_SECRET=你的AppSecret
 QQ_LOGIN_REDIRECT_URI=http://localhost:3000/api/auth/qq/callback
-GATEWAY_INSTANCE_ID=starbot-node-1
 ```
 
 未配置时，登录页会明确显示“QQ 登录未配置”，不会伪装成可用功能。
 
-## SDK 开发
+## 会员支付
 
-完整事件消费、ACK 和主动调用 QQ OpenAPI 契约见 [docs/plugin-development.md](docs/plugin-development.md)。可运行示例：
+普通用户在“账户 -> 会员与账单”选择专业版或团队版，并按月、季度或年度购买。订单价格始终由服务端套餐配置计算，客户端不能指定金额。
+
+- **易支付兼容网关**：填写网关提交地址、商户 ID 和商户密钥。异步通知地址为 `https://你的域名/api/payments/epay/notify`，网关必须能从公网通过 HTTPS 访问；平台验签、核对订单金额后自动发放权益。
+- **人工收款审核**：用户创建待支付订单并查看付款说明，管理员确认到账后发放权益。
+- **开发沙箱**：创建订单后立即模拟支付成功，仅适合本地开发；生产环境会拒绝启用和使用沙箱支付。
+
+续费从当前未过期会员的到期时间继续顺延；已到期会员从付款时间重新计算。到期后账号自动回退免费版额度，已创建机器人不会被删除，配额也不会降到当前已用数量以下。
+
+## 插件开发
+
+完整插件清单、SDK、权限和运行限制见 [docs/plugin-development.md](docs/plugin-development.md)。构建仓库示例：
 
 ```powershell
-$env:STARBOT_PLATFORM_URL='http://localhost:3000'
-$env:STARBOT_PLUGIN_ID='创建 SDK 应用时显示的应用 ID'
-$env:STARBOT_PLUGIN_SECRET='创建 SDK 应用时显示的应用密钥'
-node examples/sdk-app/index.mjs
+node sdk/plugin/build.mjs examples/hosted-plugin dist/hello-starbot.zip
 ```
+
+启动平台后，在“插件中心 -> 导入插件包”上传 `dist/hello-starbot.zip`，然后安装到机器人、填写配置并启用。旧远程应用迁移说明也保留在同一文档末尾。
 
 ## 验证
 
@@ -75,6 +98,7 @@ node examples/sdk-app/index.mjs
 npm test
 npm run lint
 npm run build
+npm run test:e2e
 ```
 
 ## QQ 官方 Webhook
@@ -85,6 +109,8 @@ Webhook 的事件订阅在 QQ 开放平台后台完成。WebSocket 仍需在 Ide
 
 ## 部署边界
 
-单机多 Node 进程可共享 SQLite Gateway 租约和 SDK 事件租约。跨主机高可用集群不应共享 SQLite 网络文件，应迁移到 PostgreSQL/Redis 或独立 Gateway Worker。反向代理需允许最大 201MB 请求体。
+单机多 Node 进程可共享 SQLite Gateway 租约、插件安装和兼容远程应用事件租约。跨主机高可用集群不应共享 SQLite 网络文件，应迁移到 PostgreSQL/Redis 或独立 Gateway/事件 Worker。反向代理需允许最大 201MB 请求体。
 
 QQ OAuth 与 QQ Bot 实网验收仍需要部署方提供真实凭据、已备案 HTTPS 回调和目标 OpenID；本地模拟测试不能替代 QQ 返回的成功响应与 Trace ID。
+
+真实支付还需要部署方提供兼容易支付协议的商户凭据，并在支付服务后台配置公网 HTTPS 异步通知。开发沙箱与人工确认不能作为真实在线支付验收证据。

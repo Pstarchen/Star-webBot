@@ -23,6 +23,7 @@ let qqWebhookTokenModule: typeof import("@/lib/qq-webhook-token");
 let rawUploadModule: typeof import("@/lib/raw-upload");
 let securityModule: typeof import("@/lib/security");
 let sessionModule: typeof import("@/lib/session");
+let systemSettingsModule: typeof import("@/lib/system-settings-service");
 let userServiceModule: typeof import("@/lib/user-service");
 
 beforeAll(async () => {
@@ -31,7 +32,7 @@ beforeAll(async () => {
   process.env.BOOTSTRAP_ADMIN_PASSWORD = "admin-password-2026";
   process.env.ALLOW_PRIVATE_WEBHOOKS = "false";
   process.env.ALLOW_INSECURE_WEBHOOKS = "false";
-  [databaseModule, botServiceModule, cryptoModule, eventRetentionModule, eventIngestionModule, gatewayCoordinationModule, membershipModule, passwordModule, pluginModule, qqApiModule, qqMediaModule, qqWebhookModule, qqWebhookTokenModule, rawUploadModule, securityModule, sessionModule, userServiceModule] = await Promise.all([
+  [databaseModule, botServiceModule, cryptoModule, eventRetentionModule, eventIngestionModule, gatewayCoordinationModule, membershipModule, passwordModule, pluginModule, qqApiModule, qqMediaModule, qqWebhookModule, qqWebhookTokenModule, rawUploadModule, securityModule, sessionModule, systemSettingsModule, userServiceModule] = await Promise.all([
     import("@/lib/database"),
     import("@/lib/bot-service"),
     import("@/lib/crypto-vault"),
@@ -48,6 +49,7 @@ beforeAll(async () => {
     import("@/lib/raw-upload"),
     import("@/lib/security"),
     import("@/lib/session"),
+    import("@/lib/system-settings-service"),
     import("@/lib/user-service"),
   ]);
   databaseModule.getDatabase();
@@ -128,6 +130,199 @@ describe("authentication and membership", () => {
   });
 });
 
+describe("system settings and membership billing", () => {
+  function adminUser() {
+    const admin = sessionModule.authenticate("admin@test.local", "admin-password-2026");
+    expect(admin).not.toBeNull();
+    return admin!;
+  }
+
+  function registeredUser(label: string) {
+    return sessionModule.registerUser({
+      name: `付费用户 ${label}`,
+      email: `billing-${label}@example.com`,
+      password: "strong-password",
+    });
+  }
+
+  function enableSandboxPayment() {
+    systemSettingsModule.updatePaymentSettings(adminUser(), {
+      enabled: true,
+      provider: "sandbox",
+      epayGatewayUrl: "",
+      epayPid: "",
+      manualInstructions: "",
+    });
+  }
+
+  it("persists public branding and never returns configured secrets", () => {
+    const admin = adminUser();
+    const regular = registeredUser("settings");
+    expect(() => systemSettingsModule.getAdminSystemSettings(regular)).toThrow("ADMIN_REQUIRED");
+
+    const site = systemSettingsModule.updateSiteSettings(admin, {
+      siteName: "星辰机器人平台",
+      siteTagline: "多机器人开发与运营",
+      siteDescription: "面向开发者与运营团队的 QQ 官方机器人管理平台。",
+      icpCode: "京ICP备12345678号",
+      icpUrl: "https://beian.miit.gov.cn/",
+      policeCode: "京公网安备110000000001号",
+      policeUrl: "https://www.beian.gov.cn/",
+      copyrightText: "星辰机器人平台",
+    });
+    expect(site.site).toMatchObject({ siteName: "星辰机器人平台", icpCode: "京ICP备12345678号", policeCode: "京公网安备110000000001号" });
+    expect(systemSettingsModule.getPublicSiteSettings()).toMatchObject({ siteName: "星辰机器人平台", copyrightText: "星辰机器人平台" });
+
+    const qqSecret = "qq-login-secret-from-database";
+    const epayKey = "epay-merchant-key-from-database";
+    systemSettingsModule.updateQQLoginSettings(admin, {
+      enabled: true,
+      appId: "database-qq-app",
+      appSecret: qqSecret,
+      redirectUri: "https://example.com/api/auth/qq/callback",
+    });
+    const settings = systemSettingsModule.updatePaymentSettings(admin, {
+      enabled: true,
+      provider: "epay",
+      epayGatewayUrl: "https://pay.example.com/submit.php",
+      epayPid: "merchant-1001",
+      epayKey,
+      manualInstructions: "",
+    });
+    expect(settings.qq.appSecretConfigured).toBe(true);
+    expect(settings.payment.epayKeyConfigured).toBe(true);
+    expect(JSON.stringify(settings)).not.toContain(qqSecret);
+    expect(JSON.stringify(settings)).not.toContain(epayKey);
+    const stored = databaseModule.getDatabase().prepare("SELECT qq_app_secret_cipher, epay_key_cipher FROM system_settings WHERE id = 1").get() as { qq_app_secret_cipher: string; epay_key_cipher: string };
+    expect(stored.qq_app_secret_cipher).not.toContain(qqSecret);
+    expect(stored.epay_key_cipher).not.toContain(epayKey);
+  });
+
+  it.each([
+    ["monthly", 1, 2900],
+    ["quarterly", 3, 7900],
+    ["yearly", 12, 29900],
+  ] as const)("automatically grants %s sandbox purchases for the configured server price", (billingCycle, expectedMonths, expectedAmount) => {
+    enableSandboxPayment();
+    const user = registeredUser(billingCycle);
+    const before = new Date();
+    const result = membershipModule.createMembershipOrder(user, {
+      planId: "pro",
+      billingCycle,
+      paymentChannel: "alipay",
+      returnUrl: "http://localhost:3000/",
+      notifyUrl: "http://localhost:3000/api/payments/epay/notify",
+    });
+    expect(result).toMatchObject({ order: { status: "paid", amountCents: expectedAmount, paymentChannel: "sandbox" }, membership: { plan: { id: "pro" }, botQuota: 5 } });
+    if (!("membership" in result) || !result.membership) throw new Error("Sandbox payment did not grant membership");
+    const expiry = new Date(result.membership.expiresAt);
+    const earliestExpected = new Date(before);
+    earliestExpected.setUTCDate(1);
+    earliestExpected.setUTCMonth(earliestExpected.getUTCMonth() + expectedMonths);
+    earliestExpected.setUTCDate(Math.min(before.getUTCDate(), new Date(Date.UTC(earliestExpected.getUTCFullYear(), earliestExpected.getUTCMonth() + 1, 0)).getUTCDate()));
+    expect(Math.abs(expiry.getTime() - earliestExpected.getTime())).toBeLessThan(5_000);
+  });
+
+  it("does not extend membership twice when payment confirmation is repeated", () => {
+    enableSandboxPayment();
+    const user = registeredUser("idempotency");
+    const created = membershipModule.createMembershipOrder(user, {
+      planId: "team",
+      billingCycle: "monthly",
+      paymentChannel: "qqpay",
+      returnUrl: "http://localhost:3000/",
+      notifyUrl: "http://localhost:3000/api/payments/epay/notify",
+    });
+    const database = databaseModule.getDatabase();
+    const before = database.prepare("SELECT expires_at FROM user_memberships WHERE user_id = ?").get(user.id) as { expires_at: string };
+    const repeated = membershipModule.confirmMembershipOrder(null, created.order.id, "duplicate-provider-trade");
+    const after = database.prepare("SELECT expires_at FROM user_memberships WHERE user_id = ?").get(user.id) as { expires_at: string };
+    expect(repeated.alreadyPaid).toBe(true);
+    expect(after.expires_at).toBe(before.expires_at);
+  });
+
+  it("verifies epay callbacks, rejects forged signatures, and grants membership once", () => {
+    const epayKey = "epay-callback-test-key";
+    systemSettingsModule.updatePaymentSettings(adminUser(), {
+      enabled: true,
+      provider: "epay",
+      epayGatewayUrl: "https://pay.example.com/submit.php",
+      epayPid: "merchant-callback-test",
+      epayKey,
+      manualInstructions: "",
+    });
+    const user = registeredUser("epay-callback");
+    const created = membershipModule.createMembershipOrder(user, {
+      planId: "team",
+      billingCycle: "yearly",
+      paymentChannel: "wxpay",
+      returnUrl: "https://console.example.com/",
+      notifyUrl: "https://console.example.com/api/payments/epay/notify",
+    });
+    expect(created).toMatchObject({ order: { status: "pending", amountCents: 99900, paymentChannel: "wxpay" } });
+    if (!("checkoutUrl" in created) || !created.checkoutUrl) throw new Error("Epay checkout URL was not created");
+    const checkout = new URL(created.checkoutUrl);
+    expect(checkout.origin + checkout.pathname).toBe("https://pay.example.com/submit.php");
+    expect(checkout.searchParams.get("money")).toBe("999.00");
+
+    const callback: Record<string, string> = {
+      pid: "merchant-callback-test",
+      type: "wxpay",
+      out_trade_no: created.order.orderNo,
+      trade_no: "epay-trade-2026",
+      trade_status: "TRADE_SUCCESS",
+      name: "团队版-yearly",
+      money: "999.00",
+      sign_type: "MD5",
+    };
+    expect(() => membershipModule.verifyEpayNotification({ ...callback, sign: "0".repeat(32) })).toThrow("PAYMENT_SIGNATURE_INVALID");
+    callback.sign = createHash("md5").update(Object.entries(callback)
+      .filter(([name, value]) => name !== "sign" && name !== "sign_type" && value !== "")
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, value]) => `${name}=${value}`)
+      .join("&") + epayKey).digest("hex");
+    const confirmed = membershipModule.verifyEpayNotification(callback);
+    expect(confirmed).toMatchObject({ order: { status: "paid" }, membership: { plan: { id: "team" }, botQuota: 20 }, alreadyPaid: false });
+    expect(membershipModule.verifyEpayNotification(callback)).toMatchObject({ order: { status: "paid" }, alreadyPaid: true });
+  });
+
+  it("requires an administrator to confirm manual payments", () => {
+    const admin = adminUser();
+    systemSettingsModule.updatePaymentSettings(admin, {
+      enabled: true,
+      provider: "manual",
+      epayGatewayUrl: "",
+      epayPid: "",
+      manualInstructions: "请转账后联系管理员审核",
+    });
+    const user = registeredUser("manual");
+    const created = membershipModule.createMembershipOrder(user, {
+      planId: "pro",
+      billingCycle: "quarterly",
+      paymentChannel: "alipay",
+      returnUrl: "http://localhost:3000/",
+      notifyUrl: "http://localhost:3000/api/payments/epay/notify",
+    });
+    expect(created).toMatchObject({ order: { status: "pending", amountCents: 7900, paymentChannel: "manual", paymentNote: "请转账后联系管理员审核" }, checkoutUrl: null });
+    expect(() => membershipModule.confirmMembershipOrder(user, created.order.id, "self-confirmed")).toThrow("ADMIN_REQUIRED");
+    expect(membershipModule.confirmMembershipOrder(admin, created.order.id, "manual-trade-1001", "管理员确认到账")).toMatchObject({ order: { status: "paid" }, membership: { plan: { id: "pro" } } });
+  });
+
+  it("expires paid memberships and restores the free quota", () => {
+    const user = registeredUser("expiry");
+    const database = databaseModule.getDatabase();
+    database.prepare("UPDATE users SET bot_quota = 5 WHERE id = ?").run(user.id);
+    database.prepare("UPDATE user_memberships SET plan_id = 'pro', status = 'active', expires_at = ?, updated_at = ? WHERE user_id = ?")
+      .run(new Date(Date.now() - 60_000).toISOString(), new Date().toISOString(), user.id);
+    const state = globalThis as typeof globalThis & { __starbotMembershipExpiryCheckedAt?: number };
+    state.__starbotMembershipExpiryCheckedAt = 0;
+    databaseModule.getDatabase();
+    expect(database.prepare("SELECT bot_quota FROM users WHERE id = ?").get(user.id)).toEqual({ bot_quota: 1 });
+    expect(database.prepare("SELECT status FROM user_memberships WHERE user_id = ?").get(user.id)).toEqual({ status: "expired" });
+    expect(membershipModule.membershipCenter(user).current).toMatchObject({ plan: { id: "free" }, status: "expired", expiresAt: null });
+  });
+});
+
 describe("request security", () => {
   it("limits repeated requests within a window", () => {
     securityModule.consumeRateLimit("test-bucket", 2, 60_000);
@@ -138,8 +333,16 @@ describe("request security", () => {
   it("rejects cross-site mutation origins", () => {
     const trusted = new Request("https://console.example.com/api/auth/login", { headers: { origin: "https://console.example.com" } });
     expect(() => securityModule.assertTrustedRequest(trusted)).not.toThrow();
+    const proxiedLocally = new Request("http://internal-next-host:3000/api/auth/login", {
+      headers: { origin: "http://localhost:3000", host: "localhost:3000", "sec-fetch-site": "same-origin" },
+    });
+    expect(() => securityModule.assertTrustedRequest(proxiedLocally)).not.toThrow();
     const untrusted = new Request("https://console.example.com/api/auth/login", { headers: { origin: "https://attacker.example" } });
     expect(() => securityModule.assertTrustedRequest(untrusted)).toThrow("UNTRUSTED_ORIGIN");
+    const spoofedHost = new Request("https://internal-next-host/api/auth/login", {
+      headers: { origin: "https://attacker.example", host: "console.example.com", "sec-fetch-site": "cross-site" },
+    });
+    expect(() => securityModule.assertTrustedRequest(spoofedHost)).toThrow("UNTRUSTED_ORIGIN");
   });
 
   it("accepts only relative QQ API paths", () => {

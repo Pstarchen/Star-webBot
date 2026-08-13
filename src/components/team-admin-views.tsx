@@ -253,7 +253,7 @@ export function AdminView({ currentUserId, initialMembers, onMembersChange }: { 
               <div className="text-sm font-semibold">{plan.name}</div>
               <div className="mt-4 space-y-2 text-xs text-muted-foreground">
                 <div className="flex justify-between"><span>机器人额度</span><span className="mono-data text-foreground">{plan.botQuota}</span></div>
-                <div className="flex justify-between"><span>SDK 应用额度</span><span className="mono-data text-foreground">{plan.pluginQuota}</span></div>
+                <div className="flex justify-between"><span>插件安装额度</span><span className="mono-data text-foreground">{plan.pluginQuota}</span></div>
                 <div className="flex justify-between"><span>事件保留</span><span className="mono-data text-foreground">{plan.eventRetentionDays} 天</span></div>
               </div>
             </div>

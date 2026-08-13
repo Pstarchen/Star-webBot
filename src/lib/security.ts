@@ -48,5 +48,11 @@ export function assertTrustedRequest(request: Request) {
   if (request.headers.get("sec-fetch-site") === "cross-site") throw new Error("UNTRUSTED_ORIGIN");
   const origin = request.headers.get("origin");
   if (!origin) return;
-  if (origin !== new URL(request.url).origin) throw new Error("UNTRUSTED_ORIGIN");
+  const originUrl = new URL(origin);
+  const requestUrl = new URL(request.url);
+  const forwardedHost = process.env.TRUST_PROXY === "true" ? request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() : null;
+  const forwardedProtocol = process.env.TRUST_PROXY === "true" ? request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() : null;
+  const requestHost = forwardedHost || request.headers.get("host") || requestUrl.host;
+  const requestProtocol = forwardedProtocol ? `${forwardedProtocol}:` : requestUrl.protocol;
+  if (originUrl.host !== requestHost || originUrl.protocol !== requestProtocol) throw new Error("UNTRUSTED_ORIGIN");
 }

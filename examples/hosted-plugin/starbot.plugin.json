@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "hello-starbot",
+  "name": "你好 StarBot",
+  "version": "1.0.0",
+  "description": "收到包含指定关键词的单聊或群聊 @ 消息时自动回复。",
+  "author": "StarBot Developer",
+  "category": "消息互动",
+  "tags": ["示例", "自动回复"],
+  "entry": "index.js",
+  "events": ["C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"],
+  "permissions": ["reply:text", "storage:kv", "log:write"],
+  "commands": [
+    { "name": "你好", "description": "回复欢迎消息并累计触发次数" }
+  ],
+  "configSchema": [
+    { "key": "keyword", "label": "触发关键词", "type": "text", "required": true, "default": "你好" },
+    { "key": "reply", "label": "回复内容", "type": "textarea", "required": true, "default": "你好，欢迎使用 StarBot。" }
+  ]
+}

@@ -11,6 +11,8 @@ const redirectUri = "http://localhost:3000/api/auth/qq/callback";
 let databaseModule: typeof import("@/lib/database");
 let qqLoginModule: typeof import("@/lib/qq-login");
 let callbackRoute: typeof import("@/app/api/auth/qq/callback/route");
+let sessionModule: typeof import("@/lib/session");
+let systemSettingsModule: typeof import("@/lib/system-settings-service");
 
 type QQResponseSet = {
   token?: Response;
@@ -48,10 +50,12 @@ beforeAll(async () => {
   process.env.QQ_LOGIN_APP_ID = "qq-login-app";
   process.env.QQ_LOGIN_APP_SECRET = "qq-login-secret";
   process.env.QQ_LOGIN_REDIRECT_URI = redirectUri;
-  [databaseModule, qqLoginModule, callbackRoute] = await Promise.all([
+  [databaseModule, qqLoginModule, callbackRoute, sessionModule, systemSettingsModule] = await Promise.all([
     import("@/lib/database"),
     import("@/lib/qq-login"),
     import("@/app/api/auth/qq/callback/route"),
+    import("@/lib/session"),
+    import("@/lib/system-settings-service"),
   ]);
   databaseModule.getDatabase();
 });
@@ -68,6 +72,35 @@ afterAll(() => {
 });
 
 describe("QQ OAuth", () => {
+  it("uses environment fallback until an administrator saves database configuration", () => {
+    expect(systemSettingsModule.getQQLoginConfig()).toEqual({
+      enabled: true,
+      appId: "qq-login-app",
+      appSecret: "qq-login-secret",
+      redirectUri,
+    });
+    const admin = sessionModule.authenticate("admin@qq-login.test", "admin-password-2026");
+    expect(admin).not.toBeNull();
+    try {
+      systemSettingsModule.updateQQLoginSettings(admin!, {
+        enabled: true,
+        appId: "database-qq-app",
+        appSecret: "database-qq-secret",
+        redirectUri: "https://console.example.com/api/auth/qq/callback",
+      });
+      expect(systemSettingsModule.getQQLoginConfig()).toEqual({
+        enabled: true,
+        appId: "database-qq-app",
+        appSecret: "database-qq-secret",
+        redirectUri: "https://console.example.com/api/auth/qq/callback",
+      });
+    } finally {
+      databaseModule.getDatabase().prepare(`
+        UPDATE system_settings SET qq_login_enabled = 0, qq_app_id = '', qq_app_secret_cipher = NULL, qq_redirect_uri = '' WHERE id = 1
+      `).run();
+    }
+  });
+
   it("binds authorization state to the redirect URI and consumes it once", async () => {
     const authorization = qqLoginModule.createQQAuthorization(redirectUri);
     expect(authorization.url.origin + authorization.url.pathname).toBe("https://graph.qq.com/oauth2.0/authorize");

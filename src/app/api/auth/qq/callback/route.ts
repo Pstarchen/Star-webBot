@@ -2,11 +2,12 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { completeQQLogin } from "@/lib/qq-login";
 import { createSessionToken, deleteSessionsForUser, sessionCookieName, sessionMaxAgeSeconds } from "@/lib/session";
+import { getQQLoginConfig } from "@/lib/system-settings-service";
 
 const stateCookie = "starbot_qq_oauth_state";
 
 function redirectUri(request: Request) {
-  return process.env.QQ_LOGIN_REDIRECT_URI || new URL("/api/auth/qq/callback", request.url).toString();
+  return getQQLoginConfig().redirectUri || new URL("/api/auth/qq/callback", request.url).toString();
 }
 
 function clearStateCookie(response: NextResponse) {

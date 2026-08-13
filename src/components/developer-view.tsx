@@ -1,10 +1,27 @@
 "use client";
 
 import { useState } from "react";
-import { BookOpen, Check, Copy, FileUp, Play, TerminalSquare } from "lucide-react";
+import * as Tabs from "@radix-ui/react-tabs";
+import {
+  BookOpen,
+  Box,
+  Check,
+  Code2,
+  Copy,
+  Database,
+  Download,
+  FileJson2,
+  FileUp,
+  MessageSquareReply,
+  PackageCheck,
+  Play,
+  ShieldCheck,
+  TerminalSquare,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { FilePicker } from "@/components/ui/file-picker";
 import { Input, Textarea } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
@@ -12,8 +29,51 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import type { Bot } from "@/types/platform";
 
+const pluginCode = `StarBot.definePlugin({
+  onEvent(event, sdk) {
+    const content = String(event.data?.content || "").trim();
+    if (content !== sdk.config.keyword) return;
+
+    const count = sdk.kv.get("triggerCount", 0) + 1;
+    sdk.kv.set("triggerCount", count);
+    sdk.reply.text(\`${"${sdk.config.reply}"}\\n已触发 ${"${count}"} 次。\`);
+    sdk.log.info("keyword matched", { count });
+  },
+});`;
+
+const manifestCode = `{
+  "schemaVersion": 1,
+  "id": "keyword-reply",
+  "name": "关键词回复",
+  "version": "1.0.0",
+  "description": "收到指定关键词时自动回复，并记录累计触发次数。",
+  "author": "Your Name",
+  "category": "消息互动",
+  "tags": ["自动回复"],
+  "entry": "index.js",
+  "events": ["C2C_MESSAGE_CREATE"],
+  "permissions": ["reply:text", "storage:kv", "log:write"],
+  "configSchema": [
+    { "key": "keyword", "label": "关键词", "type": "text", "required": true, "default": "你好" },
+    { "key": "reply", "label": "回复内容", "type": "text", "required": true, "default": "你好，消息已收到。" }
+  ]
+}`;
+
+const workflow = [
+  ["01", "编写", "用 StarBot.definePlugin 注册同步事件处理器"],
+  ["02", "构建", "运行 SDK 构建命令生成可校验 ZIP"],
+  ["03", "安装", "导入插件中心并绑定机器人后启用"],
+];
+
+const capabilities = [
+  [MessageSquareReply, "回复消息", "文本、Markdown、Ark 与键盘"],
+  [Database, "保存状态", "按安装实例隔离的 KV 存储"],
+  [Code2, "调用 QQ API", "经权限校验后由平台代发请求"],
+  [ShieldCheck, "隔离执行", "QuickJS 沙箱、超时和动作数量限制"],
+];
+
 export function DeveloperView({ bots }: { bots: Bot[] }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"code" | "manifest" | "">("");
   const [botId, setBotId] = useState(bots[0]?.id || "");
   const [targetType, setTargetType] = useState<"c2c" | "group">("c2c");
   const [targetOpenid, setTargetOpenid] = useState("");
@@ -35,28 +95,10 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
   const [mediaSending, setMediaSending] = useState(false);
   const [mediaError, setMediaError] = useState("");
   const [mediaResult, setMediaResult] = useState<unknown>(null);
-  const manifest = [
-    "import { StarBotClient } from '@starbot/node-sdk';",
-    "",
-    "const client = new StarBotClient({",
-    "  platformUrl: process.env.STARBOT_PLATFORM_URL,",
-    "  pluginId: process.env.STARBOT_PLUGIN_ID,",
-    "  secret: process.env.STARBOT_PLUGIN_SECRET,",
-    "});",
-    "",
-    "client.on('C2C_MESSAGE_CREATE', async (event, sdk) => {",
-    "  await sdk.sendC2C(event.data.author.user_openid, {",
-    "    content: '已收到', msg_type: 0, msg_id: event.data.id,",
-    "  });",
-    "});",
-    "",
-    "await client.start();",
-  ].join("\n");
-
-  async function copyManifest() {
-    await navigator.clipboard.writeText(manifest);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
+  async function copySnippet(kind: "code" | "manifest", value: string) {
+    await navigator.clipboard.writeText(value);
+    setCopied(kind);
+    window.setTimeout(() => setCopied(""), 1400);
   }
 
   async function sendMessage(event: React.FormEvent<HTMLFormElement>) {
@@ -139,28 +181,91 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
     <div>
       <PageHeader
         title="开发者中心"
-        description="使用已添加的机器人凭据调用 QQ Bot API v2。"
+        description="开发托管插件，并使用机器人凭据调试 QQ Bot API v2。"
         action={(
-          <a href="https://bot.q.qq.com/wiki/develop/api-v2/" target="_blank" rel="noreferrer" className={cn(buttonVariants({ variant: "outline" }))}>
-            <BookOpen size={15} />QQ 官方文档
-          </a>
+          <div className="flex flex-wrap gap-2">
+            <a href="/downloads/daily-checkin-demo.zip" download className={cn(buttonVariants({ variant: "default" }))}>
+              <Download size={15} />下载测试插件
+            </a>
+            <a href="https://bot.q.qq.com/wiki/develop/api-v2/" target="_blank" rel="noreferrer" className={cn(buttonVariants({ variant: "outline" }))}>
+              <BookOpen size={15} />QQ 官方文档
+            </a>
+          </div>
         )}
       />
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(340px,0.9fr)]">
-        <Card className="min-w-0 overflow-hidden">
-          <CardHeader className="flex-row items-center justify-between border-b">
-            <div>
-              <CardTitle>Node.js SDK</CardTitle>
-              <CardDescription>拉取事件、自动 ACK 与 OpenAPI 调用</CardDescription>
+      <Card className="min-w-0 overflow-hidden">
+        <CardHeader className="border-b sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <CardTitle className="text-base">托管插件 SDK</CardTitle>
+              <Badge variant="success">运行时已接入</Badge>
+              <Badge variant="outline">SDK 1.0</Badge>
             </div>
-            <Button variant="outline" size="sm" onClick={() => void copyManifest()}>
-              {copied ? <Check size={14} /> : <Copy size={14} />}{copied ? "已复制" : "复制"}
-            </Button>
-          </CardHeader>
-          <pre className="mono-data max-w-full overflow-x-auto bg-zinc-950 p-5 text-[11px] leading-6 text-zinc-200">{manifest}</pre>
-        </Card>
+            <CardDescription>插件随 QQ 事件在平台沙箱内执行，不需要自建 Webhook 服务。</CardDescription>
+          </div>
+          <div className="mono-data mt-2 rounded-md border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground sm:mt-0">
+            node sdk/plugin/build.mjs ./my-plugin ./dist/plugin.zip
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="grid lg:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]">
+            <div className="min-w-0 p-4 sm:p-5">
+              <Tabs.Root defaultValue="code">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <Tabs.List className="flex rounded-md bg-muted p-1" aria-label="插件示例文件">
+                    <Tabs.Trigger value="code" className="flex h-7 items-center gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-muted-foreground outline-none data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"><Box size={13} />index.js</Tabs.Trigger>
+                    <Tabs.Trigger value="manifest" className="flex h-7 items-center gap-1.5 rounded-sm px-2.5 text-[11px] font-medium text-muted-foreground outline-none data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"><FileJson2 size={13} />starbot.plugin.json</Tabs.Trigger>
+                  </Tabs.List>
+                </div>
+                <Tabs.Content value="code" className="relative outline-none">
+                  <Button variant="secondary" size="sm" className="absolute right-3 top-3 z-10" onClick={() => void copySnippet("code", pluginCode)}>
+                    {copied === "code" ? <Check size={13} /> : <Copy size={13} />}{copied === "code" ? "已复制" : "复制"}
+                  </Button>
+                  <pre className="mono-data max-h-[330px] overflow-auto rounded-md bg-zinc-950 p-4 pr-24 text-[11px] leading-6 text-zinc-200">{pluginCode}</pre>
+                </Tabs.Content>
+                <Tabs.Content value="manifest" className="relative outline-none">
+                  <Button variant="secondary" size="sm" className="absolute right-3 top-3 z-10" onClick={() => void copySnippet("manifest", manifestCode)}>
+                    {copied === "manifest" ? <Check size={13} /> : <Copy size={13} />}{copied === "manifest" ? "已复制" : "复制"}
+                  </Button>
+                  <pre className="mono-data max-h-[330px] overflow-auto rounded-md bg-zinc-950 p-4 pr-24 text-[11px] leading-6 text-zinc-200">{manifestCode}</pre>
+                </Tabs.Content>
+              </Tabs.Root>
 
+              <div className="mt-4 grid gap-px overflow-hidden rounded-md border bg-border sm:grid-cols-3">
+                {workflow.map(([step, title, description]) => (
+                  <div key={step} className="bg-card p-3.5">
+                    <div className="mono-data text-[10px] text-muted-foreground">STEP {step}</div>
+                    <div className="mt-1.5 text-xs font-semibold">{title}</div>
+                    <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t bg-muted/20 p-4 sm:p-5 lg:border-l lg:border-t-0">
+              <div className="text-xs font-semibold">SDK 可用能力</div>
+              <div className="mt-3 divide-y rounded-md border bg-card">
+                {capabilities.map(([Icon, title, description]) => (
+                  <div key={String(title)} className="flex items-start gap-3 p-3.5">
+                    <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-muted"><Icon size={15} /></div>
+                    <div className="min-w-0"><div className="text-xs font-medium">{String(title)}</div><div className="mt-1 text-[11px] leading-4 text-muted-foreground">{String(description)}</div></div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 rounded-md border border-dashed bg-card p-4">
+                <div className="flex items-center gap-2 text-xs font-semibold"><PackageCheck size={15} />每日签到助手</div>
+                <p className="mt-2 text-[11px] leading-5 text-muted-foreground">用于验证指令回复、配置项、用户签到记录和运行日志。下载后前往插件中心直接导入。</p>
+                <a href="/downloads/daily-checkin-demo.zip" download className={cn(buttonVariants({ variant: "outline", size: "sm" }), "mt-3 w-full")}>
+                  <Download size={14} />下载可导入 ZIP
+                </a>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(340px,0.8fr)_minmax(0,1.2fr)]">
         <Card className="min-w-0">
           <CardHeader className="flex-row items-start justify-between">
             <div>
@@ -199,24 +304,23 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
             )}
           </CardContent>
         </Card>
+        <Card className="min-w-0">
+          <CardHeader>
+            <CardTitle>OpenAPI 请求台</CardTitle>
+            <CardDescription>按 QQ 官方文档填写相对路径，可调用机器人有权限访问的 REST API。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={callOpenApi} className="grid gap-4 lg:grid-cols-[130px_minmax(0,1fr)]">
+              <label className="block"><span className="field-label">HTTP 方法</span><Select value={apiMethod} onValueChange={(value) => setApiMethod(value as typeof apiMethod)} options={["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => ({ value: method, label: method }))} ariaLabel="选择 HTTP 方法" className="mono-data" /></label>
+              <label className="block"><span className="field-label">官方 API 相对路径</span><Input value={apiPath} onChange={(event) => setApiPath(event.target.value)} className="mono-data text-xs" placeholder="/v2/users/{openid}/messages" required /></label>
+              <label className="block lg:col-span-2"><span className="field-label">JSON 请求体</span><Textarea value={apiBody} onChange={(event) => setApiBody(event.target.value)} disabled={apiMethod === "GET" || apiMethod === "DELETE"} className="mono-data min-h-36 resize-y text-xs" /></label>
+              {apiError && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 lg:col-span-2">{apiError}</div>}
+              <div className="lg:col-span-2"><Button type="submit" disabled={apiSending || !bots.length}><Play size={14} />{apiSending ? "正在请求..." : "发送 OpenAPI 请求"}</Button></div>
+            </form>
+            {apiResult !== null && <pre className="mono-data mt-5 max-h-80 max-w-full overflow-auto rounded-md bg-zinc-950 p-4 text-[10px] leading-5 text-zinc-200">{JSON.stringify(apiResult, null, 2)}</pre>}
+          </CardContent>
+        </Card>
       </div>
-
-      <Card className="mt-5 min-w-0">
-        <CardHeader>
-          <CardTitle>OpenAPI 请求台</CardTitle>
-          <CardDescription>按 QQ 官方文档填写相对路径，可调用机器人有权限访问的 REST API。</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={callOpenApi} className="grid gap-4 lg:grid-cols-[130px_minmax(0,1fr)]">
-            <label className="block"><span className="field-label">HTTP 方法</span><Select value={apiMethod} onValueChange={(value) => setApiMethod(value as typeof apiMethod)} options={["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => ({ value: method, label: method }))} ariaLabel="选择 HTTP 方法" className="mono-data" /></label>
-            <label className="block"><span className="field-label">官方 API 相对路径</span><Input value={apiPath} onChange={(event) => setApiPath(event.target.value)} className="mono-data text-xs" placeholder="/v2/users/{openid}/messages" required /></label>
-            <label className="block lg:col-span-2"><span className="field-label">JSON 请求体</span><Textarea value={apiBody} onChange={(event) => setApiBody(event.target.value)} disabled={apiMethod === "GET" || apiMethod === "DELETE"} className="mono-data min-h-36 resize-y text-xs" /></label>
-            {apiError && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 lg:col-span-2">{apiError}</div>}
-            <div className="lg:col-span-2"><Button type="submit" disabled={apiSending || !bots.length}><Play size={14} />{apiSending ? "正在请求..." : "发送 OpenAPI 请求"}</Button></div>
-          </form>
-          {apiResult !== null && <pre className="mono-data mt-5 max-h-80 max-w-full overflow-auto rounded-md bg-zinc-950 p-4 text-[10px] leading-5 text-zinc-200">{JSON.stringify(apiResult, null, 2)}</pre>}
-        </CardContent>
-      </Card>
 
       <Card className="mt-5 min-w-0">
         <CardHeader className="flex-row items-start justify-between gap-4">
@@ -231,7 +335,7 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
             <label className="block"><span className="field-label">消息场景</span><Select value={mediaTargetType} onValueChange={(value) => setMediaTargetType(value as "c2c" | "group")} options={[{ value: "c2c", label: "单聊用户" }, { value: "group", label: "群聊" }]} ariaLabel="选择富媒体消息场景" /></label>
             <label className="block"><span className="field-label">媒体类型</span><Select value={mediaFileType} onValueChange={(value) => setMediaFileType(value as typeof mediaFileType)} options={[{ value: "1", label: "图片 PNG/JPG" }, { value: "2", label: "视频 MP4" }, { value: "3", label: "语音 SILK" }, { value: "4", label: "普通文件" }]} ariaLabel="选择媒体类型" /></label>
             <label className="block md:col-span-2"><span className="field-label">目标 OpenID</span><Input value={mediaTargetOpenid} onChange={(event) => setMediaTargetOpenid(event.target.value)} className="mono-data text-xs" required /></label>
-            <label className="block md:col-span-2"><span className="field-label">本地文件</span><Input type="file" onChange={(event) => setMediaFile(event.target.files?.[0] || null)} required /></label>
+            <div className="md:col-span-2"><span className="field-label">本地文件</span><FilePicker file={mediaFile} onFileChange={setMediaFile} browseLabel="选择媒体" emptyLabel="尚未选择媒体文件" helperText="支持图片、视频、语音与普通文件，最大 200MB" disabled={mediaSending} /></div>
             <div className="flex items-center gap-2 text-xs md:col-span-2"><Switch checked={mediaSendDirectly} onCheckedChange={setMediaSendDirectly} aria-label="上传完成后直接发送消息" /><span>上传完成后直接发送消息</span></div>
             {mediaError && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 md:col-span-2">{mediaError}</div>}
             <div className="md:col-span-2"><Button type="submit" disabled={mediaSending || !bots.length || !mediaFile}><FileUp size={14} />{mediaSending ? "正在分片上传..." : "上传到 QQ"}</Button></div>

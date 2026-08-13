@@ -1,6 +1,10 @@
-import { createHmac } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createHmac, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { StarBotClient, StarBotHttpError } from "../sdk/node/index.mjs";
+import { buildPluginPackage } from "../sdk/plugin/build.mjs";
 
 describe("Node SDK", () => {
   it("signs requests, routes events, and exposes message helpers", async () => {
@@ -40,5 +44,27 @@ describe("Node SDK", () => {
     });
     await expect(client.pullEvents({ waitMs: 0 })).rejects.toMatchObject({ name: "StarBotHttpError", status: 401 });
     await expect(client.pullEvents({ waitMs: 0 })).rejects.toBeInstanceOf(StarBotHttpError);
+  });
+});
+
+describe("Hosted plugin SDK", () => {
+  it("builds the example directory into an importable ZIP", () => {
+    const output = path.join(os.tmpdir(), `starbot-plugin-sdk-${randomUUID()}.zip`);
+    try {
+      expect(buildPluginPackage(path.resolve(import.meta.dirname, "../examples/hosted-plugin"), output)).toBe(output);
+      expect(fs.statSync(output).size).toBeGreaterThan(100);
+    } finally {
+      fs.rmSync(output, { force: true });
+    }
+  });
+
+  it("builds the daily check-in test plugin", () => {
+    const output = path.join(os.tmpdir(), `starbot-checkin-plugin-${randomUUID()}.zip`);
+    try {
+      expect(buildPluginPackage(path.resolve(import.meta.dirname, "../examples/checkin-plugin"), output)).toBe(output);
+      expect(fs.statSync(output).size).toBeGreaterThan(300);
+    } finally {
+      fs.rmSync(output, { force: true });
+    }
   });
 });

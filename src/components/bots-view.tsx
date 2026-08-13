@@ -74,7 +74,7 @@ export function BotsView({ bots, onAddBot, onRefresh }: { bots: Bot[]; onAddBot:
   }
 
   async function removeBot() {
-    if (!selected || !window.confirm("确定删除该机器人及其事件和 SDK 应用数据吗？")) return;
+    if (!selected || !window.confirm("确定删除该机器人及其事件、插件安装和远程应用数据吗？")) return;
     setBusy(true);
     setError("");
     try {

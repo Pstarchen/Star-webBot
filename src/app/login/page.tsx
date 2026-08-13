@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { LoginForm } from "@/components/login-form";
 import { getSession } from "@/lib/session";
 import { qqLoginEnabled } from "@/lib/qq-login";
+import { getPublicSiteSettings } from "@/lib/system-settings-service";
 
 const qqLoginErrors: Record<string, string> = {
   qq_callback_invalid: "QQ 登录回调参数已失效，请重新发起登录",
@@ -19,5 +20,5 @@ export default async function LoginPage({
   if (user) redirect("/");
   const errorCode = (await searchParams).error;
   const initialError = typeof errorCode === "string" ? qqLoginErrors[errorCode] || "" : "";
-  return <LoginForm qqLoginEnabled={qqLoginEnabled()} initialError={initialError} />;
+  return <LoginForm qqLoginEnabled={qqLoginEnabled()} site={getPublicSiteSettings()} initialError={initialError} />;
 }

@@ -1,0 +1,27 @@
+{
+  "name": "@starbot/plugin-sdk",
+  "version": "1.0.0",
+  "description": "StarBot hosted QQ robot plugin SDK",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.mjs"
+    },
+    "./build": "./build.mjs"
+  },
+  "bin": {
+    "starbot-plugin": "./build.mjs"
+  },
+  "files": [
+    "index.d.ts",
+    "index.mjs",
+    "build.mjs"
+  ],
+  "dependencies": {
+    "fflate": "^0.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

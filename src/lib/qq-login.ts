@@ -2,6 +2,7 @@ import "server-only";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { getDatabase, writeAuditLog } from "@/lib/database";
 import { hashPassword } from "@/lib/password";
+import { getQQLoginConfig } from "@/lib/system-settings-service";
 import type { SessionUser } from "@/types/platform";
 
 const QQ_AUTHORIZE_URL = "https://graph.qq.com/oauth2.0/authorize";
@@ -33,9 +34,8 @@ function stateHash(state: string) {
 }
 
 function config() {
-  const appId = process.env.QQ_LOGIN_APP_ID;
-  const appSecret = process.env.QQ_LOGIN_APP_SECRET;
-  if (!appId || !appSecret) throw new Error("QQ_LOGIN_NOT_CONFIGURED");
+  const { enabled, appId, appSecret } = getQQLoginConfig();
+  if (!enabled || !appId || !appSecret) throw new Error("QQ_LOGIN_NOT_CONFIGURED");
   return { appId, appSecret };
 }
 
@@ -57,7 +57,8 @@ function toSessionUser(row: OAuthUserRow): SessionUser {
 }
 
 export function qqLoginEnabled() {
-  return Boolean(process.env.QQ_LOGIN_APP_ID && process.env.QQ_LOGIN_APP_SECRET);
+  const configured = getQQLoginConfig();
+  return configured.enabled && Boolean(configured.appId && configured.appSecret);
 }
 
 export function createQQAuthorization(redirectUri: string) {

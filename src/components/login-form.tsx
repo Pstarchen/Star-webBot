@@ -1,16 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import * as Tabs from "@radix-ui/react-tabs";
 import { ArrowRight, Eye, EyeOff, LockKeyhole, MessageCircle } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { SiteFooter } from "@/components/site-footer";
+import type { SitePublicSettings } from "@/types/platform";
 
-export function LoginForm({ qqLoginEnabled, initialError = "" }: { qqLoginEnabled: boolean; initialError?: string }) {
-  const router = useRouter();
+export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLoginEnabled: boolean; site: SitePublicSettings; initialError?: string }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -34,8 +34,7 @@ export function LoginForm({ qqLoginEnabled, initialError = "" }: { qqLoginEnable
       if (!response.ok) {
         throw new Error(body.message || (mode === "login" ? "登录失败，请稍后重试" : "注册失败，请稍后重试"));
       }
-      router.push("/");
-      router.refresh();
+      window.location.replace("/");
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "认证请求失败");
     } finally {
@@ -53,7 +52,7 @@ export function LoginForm({ qqLoginEnabled, initialError = "" }: { qqLoginEnable
       <div className="absolute inset-x-0 top-0 h-px bg-foreground" />
       <div className="w-full max-w-[420px]">
         <div className="mb-7 flex justify-center">
-          <BrandMark />
+          <BrandMark site={site} />
         </div>
 
         <Card className="shadow-lg">
@@ -137,7 +136,8 @@ export function LoginForm({ qqLoginEnabled, initialError = "" }: { qqLoginEnable
           </CardContent>
         </Card>
 
-        <p className="mt-5 text-center text-xs text-muted-foreground">QQ 官方机器人管理与开发平台</p>
+        <p className="mt-5 text-center text-xs text-muted-foreground">{site.siteDescription}</p>
+        <SiteFooter site={site} compact />
       </div>
     </main>
   );

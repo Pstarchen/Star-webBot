@@ -21,8 +21,10 @@
 | Gateway 恢复 | 每分片持久化 Session/Sequence，重启后 Resume，ACK 超时和抖动退避 |
 | 事件幂等 | Gateway Resume 与 QQ Webhook 双通道使用事件收据去重 |
 | QQ 官方 Webhook | 事件类型在 QQ 开放平台后台订阅；平台提供不可猜测回调 URL、AppID 校验、Ed25519 challenge 与事件签名校验 |
-| SDK 事件消费 | 持久队列、HMAC-SHA256 长轮询、60 秒处理租约、ACK、过期重投和最多 5 次领取 |
-| SDK 主动 OpenAPI | HMAC、Nonce、防重放、权限和限流保护的 JSON 与 multipart 代理 |
+| 托管插件 | ZIP 清单校验、项目/版本、机器人安装、动态配置、优先级、启停、KV 与运行日志 |
+| 插件隔离执行 | QuickJS 16MB 内存、150ms 截止时间、结构化动作、权限前置校验和连续失败停用 |
+| 插件市场 | 搜索分类、私有安装、开发者上架申请、管理员审核和当前市场版本 |
+| 兼容远程应用 | 持久队列、HMAC-SHA256 长轮询、60 秒处理租约、ACK、过期重投和受控 OpenAPI |
 
 上述通用代理可转发机器人已获授权的消息、频道、成员、群管理、公告、日程、帖子、音频、互动、富媒体和后续新增的同源 JSON REST 接口。它不绕过 QQ 的接口权限、参数校验或业务限制；实网成功仍以 QQ 响应和 Trace ID 为准。
 
@@ -37,8 +39,8 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 本地协议测试 | 32 项 Vitest 覆盖媒体哈希/分片字节、Gateway 租约/Session、事件幂等、Webhook Ed25519、OAuth 和数据库迁移 |
-| 本地 HTTP 测试 | 21 条生产 HTTP 工作流覆盖认证、权限、会员、停用失效、跨域、Webhook challenge、SDK 创建/签名拉取/ACK 和未签名请求拒绝 |
+| 本地协议测试 | 39 项 Vitest 覆盖插件 ZIP/隔离/KV/审核/SDK 构建、媒体哈希/分片字节、Gateway 租约/Session、事件幂等、Webhook Ed25519、OAuth 和数据库迁移 |
+| 本地 HTTP 测试 | 28 条生产 HTTP 工作流覆盖认证、权限、会员、托管插件导入/安装/配置/事件执行/审核/卸载、Webhook challenge 和兼容远程应用签名链路 |
 | 真实 Gateway 只读验收 | 两个已配置机器人在开发服务重启后恢复为在线；跨 35 秒检查 ACK 持续更新、SQLite 所有权租约续期 |
 | QQ OAuth 实网 | 需要部署方提供 QQ 互联 AppID/AppSecret 和已备案 HTTPS 回调 |
 | QQ Bot 实网 | 需要真实机器人 AppID/Client Secret、目标 OpenID 与开放平台授权 |

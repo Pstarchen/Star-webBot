@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "daily-checkin-demo",
+  "name": "每日签到助手",
+  "version": "1.0.0",
+  "description": "响应签到和状态指令，按用户保存每日签到次数，用于测试托管插件的配置、KV、日志与文本回复能力。",
+  "author": "StarBot Developer",
+  "category": "群聊工具",
+  "tags": ["示例", "签到", "KV 存储"],
+  "entry": "index.js",
+  "events": ["C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"],
+  "permissions": ["reply:text", "storage:kv", "log:write"],
+  "commands": [
+    { "name": "签到", "description": "完成今日签到，同一天重复签到不会累加" },
+    { "name": "我的签到", "description": "查看累计签到次数和最近签到日期" }
+  ],
+  "configSchema": [
+    { "key": "checkinCommand", "label": "签到指令", "type": "text", "required": true, "default": "签到" },
+    { "key": "statusCommand", "label": "查询指令", "type": "text", "required": true, "default": "我的签到" },
+    { "key": "successMessage", "label": "签到成功文案", "type": "text", "required": true, "default": "签到成功" }
+  ]
+}

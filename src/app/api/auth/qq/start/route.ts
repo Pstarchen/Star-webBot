@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { createQQAuthorization } from "@/lib/qq-login";
+import { getQQLoginConfig } from "@/lib/system-settings-service";
 
 const stateCookie = "starbot_qq_oauth_state";
 
 function redirectUri(request: Request) {
-  return process.env.QQ_LOGIN_REDIRECT_URI || new URL("/api/auth/qq/callback", request.url).toString();
+  return getQQLoginConfig().redirectUri || new URL("/api/auth/qq/callback", request.url).toString();
 }
 
 export async function GET(request: Request) {

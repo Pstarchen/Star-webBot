@@ -8,6 +8,57 @@ export type MembershipPlan = {
   botQuota: number;
   pluginQuota: number;
   eventRetentionDays: number;
+  description: string;
+  monthlyPriceCents: number;
+  quarterlyPriceCents: number;
+  yearlyPriceCents: number;
+  features: string[];
+};
+
+export type BillingCycle = "monthly" | "quarterly" | "yearly";
+export type PaymentProvider = "sandbox" | "manual" | "epay";
+export type PaymentChannel = "alipay" | "wxpay" | "qqpay" | "manual" | "sandbox";
+
+export type MembershipOrder = {
+  id: string;
+  orderNo: string;
+  planId: MembershipPlanId;
+  planName: string;
+  billingCycle: BillingCycle;
+  paymentChannel: PaymentChannel;
+  amountCents: number;
+  provider: PaymentProvider;
+  status: "pending" | "paid" | "cancelled" | "expired" | "failed";
+  paymentUrl: string | null;
+  paymentNote: string | null;
+  createdAt: string;
+  paidAt: string | null;
+};
+
+export type SitePublicSettings = {
+  siteName: string;
+  siteTagline: string;
+  siteDescription: string;
+  logoUrl: string | null;
+  faviconUrl: string | null;
+  icpCode: string;
+  icpUrl: string;
+  policeCode: string;
+  policeUrl: string;
+  copyrightText: string;
+};
+
+export type AdminSystemSettings = {
+  site: SitePublicSettings;
+  qq: { enabled: boolean; appId: string; appSecretConfigured: boolean; redirectUri: string };
+  payment: {
+    enabled: boolean;
+    provider: PaymentProvider;
+    epayGatewayUrl: string;
+    epayPid: string;
+    epayKeyConfigured: boolean;
+    manualInstructions: string;
+  };
 };
 
 export type BotStatus = "online" | "degraded" | "offline";
@@ -64,6 +115,116 @@ export type Plugin = {
   pendingEvents: number;
 };
 
+export type HostedPluginConfigField = {
+  key: string;
+  label: string;
+  description?: string;
+  type: "text" | "textarea" | "number" | "boolean" | "select";
+  required: boolean;
+  default?: string | number | boolean;
+  placeholder?: string;
+  min?: number;
+  max?: number;
+  options?: Array<{ label: string; value: string | number | boolean }>;
+};
+
+export type HostedPluginCommand = { name: string; description: string };
+
+export type PluginMarketplaceItem = {
+  id: string;
+  versionId: string;
+  slug: string;
+  name: string;
+  description: string;
+  author: string;
+  category: string;
+  tags: string[];
+  version: string;
+  featured: boolean;
+  priceCents: number;
+  installs: number;
+  enabledBots: number;
+  events: string[];
+  permissions: string[];
+  commands: HostedPluginCommand[];
+  configSchema: HostedPluginConfigField[];
+  owned: boolean;
+  installedBotIds: string[];
+};
+
+export type HostedPluginInstallation = {
+  id: string;
+  projectId: string;
+  versionId: string;
+  botId: string;
+  botName: string;
+  slug: string;
+  name: string;
+  description: string;
+  author: string;
+  category: string;
+  tags: string[];
+  version: string;
+  enabled: boolean;
+  priority: number;
+  failureCount: number;
+  lastError: string | null;
+  lastRunAt: string | null;
+  config: Record<string, string | number | boolean>;
+  configSchema: HostedPluginConfigField[];
+  events: string[];
+  permissions: string[];
+  commands: HostedPluginCommand[];
+  lastRun: null | {
+    status: "success" | "skipped" | "failed";
+    durationMs: number;
+    actionCount: number;
+    error: string | null;
+    createdAt: string;
+  };
+};
+
+export type PluginDeveloperProject = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  author: string;
+  category: string;
+  tags: string[];
+  status: "private" | "pending" | "published" | "rejected" | "suspended";
+  reviewNote: string | null;
+  pendingVersionId: string | null;
+  installs: number;
+  enabledBots: number;
+  versions: Array<{
+    id: string;
+    version: string;
+    packageSha256: string;
+    packageSize: number;
+    createdAt: string;
+  }>;
+  updatedAt: string;
+};
+
+export type PluginMarketReview = {
+  id: string;
+  projectId: string;
+  projectName: string;
+  version: string;
+  authorName: string;
+  status: "pending" | "approved" | "rejected";
+  reviewNote: string | null;
+  requestedAt: string;
+};
+
+export type PluginCenterData = {
+  marketplace: PluginMarketplaceItem[];
+  installations: HostedPluginInstallation[];
+  projects: PluginDeveloperProject[];
+  reviews: PluginMarketReview[];
+};
+
 export type TeamMember = {
   id: string;
   name: string;
@@ -89,10 +250,12 @@ export type SessionUser = {
 
 export type MessagePayload = {
   content?: string;
-  msg_type?: 0 | 2 | 7;
+  msg_type?: 0 | 2 | 3 | 7;
   msg_id?: string;
   event_id?: string;
   msg_seq?: number;
   markdown?: Record<string, unknown>;
+  ark?: Record<string, unknown>;
+  keyboard?: Record<string, unknown>;
   media?: { file_info: string };
 };

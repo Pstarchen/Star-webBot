@@ -2,6 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { recordEvent } from "@/lib/bot-service";
 import { claimEventReceipt } from "@/lib/gateway-coordination";
+import { dispatchHostedPlugins } from "@/lib/hosted-plugin-service";
 import { dispatchPlugins } from "@/lib/plugin-service";
 
 export type QQEventEnvelope = { op: number; d?: unknown; s?: number; t?: string; id?: string };
@@ -41,6 +42,7 @@ export async function ingestQQEvent(botId: string, source: "gateway" | "qq_webho
     content: eventContent(payload.d),
     payload,
   });
-  await dispatchPlugins(botId, payload.t, payload.d);
+  const hostedResult = await dispatchHostedPlugins(botId, payload.t, payload.d);
+  if (!hostedResult.stopped) await dispatchPlugins(botId, payload.t, payload.d);
   return { accepted: true, eventKey: key };
 }

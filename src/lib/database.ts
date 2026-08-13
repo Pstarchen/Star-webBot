@@ -7,6 +7,7 @@ import { hashPassword } from "@/lib/password";
 
 type GlobalDatabase = typeof globalThis & {
   __starbotDatabase?: Database.Database;
+  __starbotMembershipExpiryCheckedAt?: number;
 };
 
 function databasePath() {
@@ -91,6 +92,119 @@ function migrate(database: Database.Database) {
       UNIQUE(user_id, slug)
     );
 
+    CREATE TABLE IF NOT EXISTS plugin_projects (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      author TEXT NOT NULL,
+      category TEXT NOT NULL,
+      tags_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'private' CHECK(status IN ('private', 'pending', 'published', 'rejected', 'suspended')),
+      review_note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(owner_user_id, slug)
+    );
+
+    CREATE TABLE IF NOT EXISTS plugin_versions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES plugin_projects(id) ON DELETE CASCADE,
+      version TEXT NOT NULL,
+      manifest_json TEXT NOT NULL,
+      entry_code TEXT NOT NULL,
+      readme TEXT,
+      package_sha256 TEXT NOT NULL,
+      package_size INTEGER NOT NULL CHECK(package_size >= 0),
+      validation_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'withdrawn')),
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, version)
+    );
+
+    CREATE INDEX IF NOT EXISTS plugin_versions_project_created_idx
+      ON plugin_versions(project_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS plugin_installations (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES plugin_projects(id) ON DELETE CASCADE,
+      version_id TEXT NOT NULL REFERENCES plugin_versions(id),
+      enabled INTEGER NOT NULL DEFAULT 0,
+      priority INTEGER NOT NULL DEFAULT 50 CHECK(priority BETWEEN 1 AND 100),
+      failure_count INTEGER NOT NULL DEFAULT 0 CHECK(failure_count >= 0),
+      last_error TEXT,
+      last_run_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(bot_id, project_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS plugin_installations_bot_enabled_idx
+      ON plugin_installations(bot_id, enabled, priority);
+
+    CREATE TABLE IF NOT EXISTS plugin_config_values (
+      installation_id TEXT NOT NULL REFERENCES plugin_installations(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(installation_id, key)
+    );
+
+    CREATE TABLE IF NOT EXISTS plugin_kv (
+      installation_id TEXT NOT NULL REFERENCES plugin_installations(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(installation_id, key)
+    );
+
+    CREATE TABLE IF NOT EXISTS plugin_runs (
+      id TEXT PRIMARY KEY,
+      installation_id TEXT NOT NULL REFERENCES plugin_installations(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      event_key TEXT,
+      status TEXT NOT NULL CHECK(status IN ('success', 'skipped', 'failed')),
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      action_count INTEGER NOT NULL DEFAULT 0,
+      logs_json TEXT NOT NULL,
+      error TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS plugin_runs_installation_created_idx
+      ON plugin_runs(installation_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS plugin_market_reviews (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES plugin_projects(id) ON DELETE CASCADE,
+      version_id TEXT NOT NULL REFERENCES plugin_versions(id) ON DELETE CASCADE,
+      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
+      review_note TEXT,
+      reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      requested_at TEXT NOT NULL,
+      reviewed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS plugin_market_reviews_status_requested_idx
+      ON plugin_market_reviews(status, requested_at DESC);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS plugin_market_reviews_pending_project_idx
+      ON plugin_market_reviews(project_id) WHERE status = 'pending';
+
+    CREATE TABLE IF NOT EXISTS plugin_market_listings (
+      project_id TEXT PRIMARY KEY REFERENCES plugin_projects(id) ON DELETE CASCADE,
+      version_id TEXT NOT NULL REFERENCES plugin_versions(id),
+      featured INTEGER NOT NULL DEFAULT 0,
+      price_cents INTEGER NOT NULL DEFAULT 0 CHECK(price_cents >= 0),
+      published_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      published_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS audit_logs (
       id TEXT PRIMARY KEY,
       actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -121,6 +235,59 @@ function migrate(database: Database.Database) {
       assigned_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS system_settings (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      site_name TEXT NOT NULL,
+      site_tagline TEXT NOT NULL,
+      site_description TEXT NOT NULL,
+      site_logo_mime TEXT,
+      site_logo_blob BLOB,
+      site_favicon_mime TEXT,
+      site_favicon_blob BLOB,
+      icp_code TEXT NOT NULL DEFAULT '',
+      icp_url TEXT NOT NULL DEFAULT 'https://beian.miit.gov.cn/',
+      police_code TEXT NOT NULL DEFAULT '',
+      police_url TEXT NOT NULL DEFAULT '',
+      copyright_text TEXT NOT NULL DEFAULT '',
+      qq_login_enabled INTEGER NOT NULL DEFAULT 0,
+      qq_app_id TEXT NOT NULL DEFAULT '',
+      qq_app_secret_cipher TEXT,
+      qq_redirect_uri TEXT NOT NULL DEFAULT '',
+      payment_enabled INTEGER NOT NULL DEFAULT 0,
+      payment_provider TEXT NOT NULL DEFAULT 'sandbox' CHECK(payment_provider IN ('sandbox', 'manual', 'epay')),
+      epay_gateway_url TEXT NOT NULL DEFAULT '',
+      epay_pid TEXT NOT NULL DEFAULT '',
+      epay_key_cipher TEXT,
+      manual_payment_instructions TEXT NOT NULL DEFAULT '',
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS membership_orders (
+      id TEXT PRIMARY KEY,
+      order_no TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      plan_id TEXT NOT NULL REFERENCES membership_plans(id),
+      billing_cycle TEXT NOT NULL CHECK(billing_cycle IN ('monthly', 'quarterly', 'yearly')),
+      payment_channel TEXT NOT NULL CHECK(payment_channel IN ('alipay', 'wxpay', 'qqpay', 'manual', 'sandbox')),
+      amount_cents INTEGER NOT NULL CHECK(amount_cents >= 0),
+      provider TEXT NOT NULL CHECK(provider IN ('sandbox', 'manual', 'epay')),
+      status TEXT NOT NULL CHECK(status IN ('pending', 'paid', 'cancelled', 'expired', 'failed')),
+      payment_url TEXT,
+      provider_trade_no TEXT,
+      payment_note TEXT,
+      created_at TEXT NOT NULL,
+      paid_at TEXT,
+      expires_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS membership_orders_user_created_idx
+      ON membership_orders(user_id, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS membership_orders_status_created_idx
+      ON membership_orders(status, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS plugin_deliveries (
       id TEXT PRIMARY KEY,
@@ -267,6 +434,12 @@ function migrate(database: Database.Database) {
   }
 
   const now = new Date().toISOString();
+  const membershipPlanColumns = database.prepare("PRAGMA table_info(membership_plans)").all() as Array<{ name: string }>;
+  if (!membershipPlanColumns.some((column) => column.name === "description")) database.exec("ALTER TABLE membership_plans ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+  if (!membershipPlanColumns.some((column) => column.name === "monthly_price_cents")) database.exec("ALTER TABLE membership_plans ADD COLUMN monthly_price_cents INTEGER NOT NULL DEFAULT 0");
+  if (!membershipPlanColumns.some((column) => column.name === "quarterly_price_cents")) database.exec("ALTER TABLE membership_plans ADD COLUMN quarterly_price_cents INTEGER NOT NULL DEFAULT 0");
+  if (!membershipPlanColumns.some((column) => column.name === "yearly_price_cents")) database.exec("ALTER TABLE membership_plans ADD COLUMN yearly_price_cents INTEGER NOT NULL DEFAULT 0");
+  if (!membershipPlanColumns.some((column) => column.name === "features_json")) database.exec("ALTER TABLE membership_plans ADD COLUMN features_json TEXT NOT NULL DEFAULT '[]'");
   const insertPlan = database.prepare(`
     INSERT OR IGNORE INTO membership_plans
       (id, name, bot_quota, plugin_quota, event_retention_days, enabled, created_at, updated_at)
@@ -275,6 +448,31 @@ function migrate(database: Database.Database) {
   insertPlan.run("free", "免费版", 1, 3, 7, now, now);
   insertPlan.run("pro", "专业版", 5, 20, 30, now, now);
   insertPlan.run("team", "团队版", 20, 100, 90, now, now);
+
+  database.prepare(`
+    UPDATE membership_plans SET
+      description = CASE id
+        WHEN 'free' THEN '适合个人体验与轻量机器人开发'
+        WHEN 'pro' THEN '适合持续运营多个机器人和插件'
+        WHEN 'team' THEN '适合团队协作与高频事件处理'
+        ELSE description END,
+      monthly_price_cents = CASE id WHEN 'pro' THEN 2900 WHEN 'team' THEN 9900 ELSE monthly_price_cents END,
+      quarterly_price_cents = CASE id WHEN 'pro' THEN 7900 WHEN 'team' THEN 26900 ELSE quarterly_price_cents END,
+      yearly_price_cents = CASE id WHEN 'pro' THEN 29900 WHEN 'team' THEN 99900 ELSE yearly_price_cents END,
+      features_json = CASE id
+        WHEN 'free' THEN '["1 个机器人","3 个插件安装","事件保留 7 天"]'
+        WHEN 'pro' THEN '["5 个机器人","20 个插件安装","事件保留 30 天","优先事件处理"]'
+        WHEN 'team' THEN '["20 个机器人","100 个插件安装","事件保留 90 天","团队协作权限"]'
+        ELSE features_json END,
+      updated_at = ?
+    WHERE id IN ('free', 'pro', 'team') AND (description = '' OR features_json = '[]')
+  `).run(now);
+
+  database.prepare(`
+    INSERT OR IGNORE INTO system_settings
+      (id, site_name, site_tagline, site_description, copyright_text, payment_enabled, payment_provider, manual_payment_instructions, updated_at)
+    VALUES (1, 'StarBot', 'QQ Bot Console', '面向团队的多用户、多机器人、可扩展 QQ 官方机器人管理与开发平台。', 'StarBot', ?, 'sandbox', '提交订单后请联系管理员，并提供订单号完成审核。', ?)
+  `).run(process.env.NODE_ENV === "production" ? 0 : 1, now);
 
   database.prepare(`
     INSERT OR IGNORE INTO user_memberships
@@ -316,6 +514,28 @@ function migrate(database: Database.Database) {
   }
 
   database.prepare("INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)").run("20260812_sdk_application_schema", now);
+  database.prepare("INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)").run("20260813_system_settings_and_billing", now);
+}
+
+function expirePaidMemberships(database: Database.Database) {
+  const nowMs = Date.now();
+  const state = globalThis as GlobalDatabase;
+  if (state.__starbotMembershipExpiryCheckedAt && nowMs - state.__starbotMembershipExpiryCheckedAt < 30_000) return;
+  state.__starbotMembershipExpiryCheckedAt = nowMs;
+  const now = new Date(nowMs).toISOString();
+  const expired = database.prepare(`
+    SELECT user_id FROM user_memberships
+    WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ?
+  `).all(now) as Array<{ user_id: string }>;
+  if (!expired.length) return;
+  const freePlan = database.prepare("SELECT bot_quota FROM membership_plans WHERE id = 'free'").get() as { bot_quota: number };
+  database.transaction(() => {
+    for (const membership of expired) {
+      const usage = database.prepare("SELECT COUNT(*) AS count FROM bots WHERE user_id = ?").get(membership.user_id) as { count: number };
+      database.prepare("UPDATE users SET bot_quota = ? WHERE id = ?").run(Math.max(usage.count, freePlan.bot_quota), membership.user_id);
+      database.prepare("UPDATE user_memberships SET status = 'expired', updated_at = ? WHERE user_id = ?").run(now, membership.user_id);
+    }
+  })();
 }
 
 function seedDevelopmentUsers(database: Database.Database) {
@@ -340,6 +560,60 @@ function seedDevelopmentUsers(database: Database.Database) {
   transaction();
 }
 
+function seedOfficialPlugins(database: Database.Database) {
+  const owner = database.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1").get() as { id: string } | undefined;
+  if (!owner) return;
+
+  const now = new Date().toISOString();
+  const projectId = "starbot-official-keyword-reply";
+  const versionId = "starbot-official-keyword-reply-v1";
+  const manifest = {
+    schemaVersion: 1,
+    id: "keyword-reply",
+    name: "关键词自动回复",
+    version: "1.0.0",
+    description: "命中指定关键词后自动回复，适合欢迎语、常见问题与快捷引导。",
+    author: "StarBot",
+    category: "消息互动",
+    tags: ["自动回复", "官方"],
+    entry: "index.js",
+    events: ["C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"],
+    permissions: ["reply:text", "log:write"],
+    commands: [{ name: "关键词触发", description: "消息包含关键词时回复" }],
+    configSchema: [
+      { key: "keyword", label: "触发关键词", type: "text", required: true, default: "你好", placeholder: "例如：你好" },
+      { key: "reply", label: "回复内容", type: "textarea", required: true, default: "你好，我是由 StarBot 托管运行的 QQ 机器人。" },
+    ],
+  };
+  const entryCode = `StarBot.definePlugin({
+  onEvent(event, sdk) {
+    const content = String(event.data && event.data.content || "").trim();
+    if (content.includes(String(sdk.config.keyword || ""))) {
+      sdk.reply.text(String(sdk.config.reply || ""));
+      sdk.log.info("关键词已命中");
+    }
+  }
+});`;
+
+  database.transaction(() => {
+    database.prepare(`
+      INSERT OR IGNORE INTO plugin_projects
+        (id, owner_user_id, slug, name, description, author, category, tags_json, status, review_note, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'published', NULL, ?, ?)
+    `).run(projectId, owner.id, manifest.id, manifest.name, manifest.description, manifest.author, manifest.category, JSON.stringify(manifest.tags), now, now);
+    database.prepare(`
+      INSERT OR IGNORE INTO plugin_versions
+        (id, project_id, version, manifest_json, entry_code, readme, package_sha256, package_size, validation_json, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'active', ?)
+    `).run(versionId, projectId, manifest.version, JSON.stringify(manifest), entryCode, "# 关键词自动回复\n\n安装后配置触发关键词和回复内容即可。", "builtin:keyword-reply:1.0.0", JSON.stringify({ source: "builtin", scanner: "trusted" }), now);
+    database.prepare(`
+      INSERT OR IGNORE INTO plugin_market_listings
+        (project_id, version_id, featured, price_cents, published_by, published_at, updated_at)
+      VALUES (?, ?, 1, 0, ?, ?, ?)
+    `).run(projectId, versionId, owner.id, now, now);
+  })();
+}
+
 function ensureUserMemberships(database: Database.Database) {
   const now = new Date().toISOString();
   database.prepare(`
@@ -353,14 +627,19 @@ function ensureUserMemberships(database: Database.Database) {
 
 export function getDatabase() {
   const globalDatabase = globalThis as GlobalDatabase;
-  if (globalDatabase.__starbotDatabase) return globalDatabase.__starbotDatabase;
+  if (globalDatabase.__starbotDatabase) {
+    expirePaidMemberships(globalDatabase.__starbotDatabase);
+    return globalDatabase.__starbotDatabase;
+  }
 
   const filePath = databasePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const database = new Database(filePath);
   migrate(database);
   seedDevelopmentUsers(database);
+  seedOfficialPlugins(database);
   ensureUserMemberships(database);
+  expirePaidMemberships(database);
   globalDatabase.__starbotDatabase = database;
   return database;
 }
