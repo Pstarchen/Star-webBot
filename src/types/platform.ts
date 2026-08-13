@@ -51,6 +51,17 @@ export type SitePublicSettings = {
 export type AdminSystemSettings = {
   site: SitePublicSettings;
   qq: { enabled: boolean; appId: string; appSecretConfigured: boolean; redirectUri: string };
+  email: {
+    registrationVerificationEnabled: boolean;
+    loginEnabled: boolean;
+    smtpHost: string;
+    smtpPort: number;
+    smtpSecure: boolean;
+    smtpStarttls: boolean;
+    smtpFrom: string;
+    smtpUser: string;
+    smtpPassConfigured: boolean;
+  };
   payment: {
     enabled: boolean;
     provider: PaymentProvider;

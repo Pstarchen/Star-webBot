@@ -1,6 +1,8 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
 import { getDatabase, writeAuditLog } from "@/lib/database";
+import { hashPassword } from "@/lib/password";
 import type { AdminSystemSettings, PaymentProvider, SessionUser, SitePublicSettings } from "@/types/platform";
 
 type SettingsRow = {
@@ -24,6 +26,16 @@ type SettingsRow = {
   epay_pid: string;
   epay_key_cipher: string | null;
   manual_payment_instructions: string;
+  email_registration_verification_enabled: number;
+  email_login_enabled: number;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_secure: number;
+  smtp_starttls: number;
+  smtp_from: string;
+  smtp_user: string;
+  smtp_pass_cipher: string | null;
+  install_completed: number;
 };
 
 function settingsRow() {
@@ -49,12 +61,31 @@ export function getPublicSiteSettings() {
   return publicSettings(settingsRow());
 }
 
+export function getPublicAuthSettings() {
+  const row = settingsRow();
+  return {
+    emailRegistrationVerificationEnabled: Boolean(row.email_registration_verification_enabled),
+    emailLoginEnabled: Boolean(row.email_login_enabled),
+  };
+}
+
 export function getAdminSystemSettings(actor: SessionUser): AdminSystemSettings {
   if (actor.role !== "admin") throw new Error("ADMIN_REQUIRED");
   const row = settingsRow();
   return {
     site: publicSettings(row),
     qq: { enabled: Boolean(row.qq_login_enabled), appId: row.qq_app_id, appSecretConfigured: Boolean(row.qq_app_secret_cipher || process.env.QQ_LOGIN_APP_SECRET), redirectUri: row.qq_redirect_uri },
+    email: {
+      registrationVerificationEnabled: Boolean(row.email_registration_verification_enabled),
+      loginEnabled: Boolean(row.email_login_enabled),
+      smtpHost: row.smtp_host,
+      smtpPort: row.smtp_port,
+      smtpSecure: Boolean(row.smtp_secure),
+      smtpStarttls: Boolean(row.smtp_starttls),
+      smtpFrom: row.smtp_from,
+      smtpUser: row.smtp_user,
+      smtpPassConfigured: Boolean(row.smtp_pass_cipher || process.env.SMTP_PASS),
+    },
     payment: {
       enabled: Boolean(row.payment_enabled),
       provider: row.payment_provider,
@@ -64,6 +95,12 @@ export function getAdminSystemSettings(actor: SessionUser): AdminSystemSettings 
       manualInstructions: row.manual_payment_instructions,
     },
   };
+}
+
+export function installationStatus() {
+  const row = settingsRow();
+  const adminCount = getDatabase().prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'").get() as { count: number };
+  return { needed: !Boolean(row.install_completed) || adminCount.count === 0 };
 }
 
 export function updateSiteSettings(actor: SessionUser, input: Omit<SitePublicSettings, "logoUrl" | "faviconUrl">) {
@@ -87,6 +124,60 @@ export function updateQQLoginSettings(actor: SessionUser, input: { enabled: bool
   return getAdminSystemSettings(actor);
 }
 
+export function updateEmailSettings(actor: SessionUser, input: {
+  registrationVerificationEnabled: boolean;
+  loginEnabled: boolean;
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  smtpStarttls: boolean;
+  smtpFrom: string;
+  smtpUser: string;
+  smtpPass?: string;
+  clearPass?: boolean;
+}) {
+  if (actor.role !== "admin") throw new Error("ADMIN_REQUIRED");
+  const current = settingsRow();
+  const passCipher = input.clearPass ? null : input.smtpPass ? encryptSecret(input.smtpPass) : current.smtp_pass_cipher;
+  if ((input.registrationVerificationEnabled || input.loginEnabled) && (!input.smtpHost || !input.smtpFrom || !(passCipher || process.env.SMTP_PASS))) {
+    throw new Error("EMAIL_CONFIG_INCOMPLETE");
+  }
+  getDatabase().prepare(`
+    UPDATE system_settings SET
+      email_registration_verification_enabled = ?,
+      email_login_enabled = ?,
+      smtp_host = ?,
+      smtp_port = ?,
+      smtp_secure = ?,
+      smtp_starttls = ?,
+      smtp_from = ?,
+      smtp_user = ?,
+      smtp_pass_cipher = ?,
+      updated_by = ?,
+      updated_at = ?
+    WHERE id = 1
+  `).run(
+    input.registrationVerificationEnabled ? 1 : 0,
+    input.loginEnabled ? 1 : 0,
+    input.smtpHost,
+    input.smtpPort,
+    input.smtpSecure ? 1 : 0,
+    input.smtpStarttls ? 1 : 0,
+    input.smtpFrom,
+    input.smtpUser,
+    passCipher,
+    actor.id,
+    new Date().toISOString(),
+  );
+  writeAuditLog(actor.id, "system.email.update", "system_settings", "1", {
+    registrationVerificationEnabled: input.registrationVerificationEnabled,
+    loginEnabled: input.loginEnabled,
+    smtpHost: input.smtpHost,
+    smtpPort: input.smtpPort,
+  });
+  return getAdminSystemSettings(actor);
+}
+
 export function updatePaymentSettings(actor: SessionUser, input: { enabled: boolean; provider: PaymentProvider; epayGatewayUrl: string; epayPid: string; epayKey?: string; clearKey?: boolean; manualInstructions: string }) {
   if (actor.role !== "admin") throw new Error("ADMIN_REQUIRED");
   const current = settingsRow();
@@ -106,6 +197,100 @@ export function getQQLoginConfig() {
   const appSecret = row.qq_app_secret_cipher ? decryptSecret(row.qq_app_secret_cipher) : process.env.QQ_LOGIN_APP_SECRET || "";
   const enabled = Boolean(row.qq_login_enabled || (!row.qq_app_id && process.env.QQ_LOGIN_APP_ID && process.env.QQ_LOGIN_APP_SECRET));
   return { enabled, appId, appSecret, redirectUri: row.qq_redirect_uri || process.env.QQ_LOGIN_REDIRECT_URI || "" };
+}
+
+export function getEmailConfig() {
+  const row = settingsRow();
+  const smtpHost = row.smtp_host || process.env.SMTP_HOST || "";
+  const smtpPort = row.smtp_host ? row.smtp_port : Number(process.env.SMTP_PORT || (process.env.SMTP_SECURE === "true" ? 465 : 587));
+  const smtpSecure = row.smtp_host ? Boolean(row.smtp_secure) : process.env.SMTP_SECURE === "true";
+  const smtpStarttls = row.smtp_host ? Boolean(row.smtp_starttls) : process.env.SMTP_STARTTLS !== "false";
+  const smtpFrom = row.smtp_from || process.env.SMTP_FROM || "";
+  const smtpUser = row.smtp_user || process.env.SMTP_USER || "";
+  const smtpPass = row.smtp_pass_cipher ? decryptSecret(row.smtp_pass_cipher) : process.env.SMTP_PASS || "";
+  return {
+    registrationVerificationEnabled: Boolean(row.email_registration_verification_enabled),
+    loginEnabled: Boolean(row.email_login_enabled),
+    smtpHost,
+    smtpPort,
+    smtpSecure,
+    smtpStarttls,
+    smtpFrom,
+    smtpUser,
+    smtpPass,
+    configured: Boolean(smtpHost && smtpFrom && smtpPass),
+  };
+}
+
+export function completeInstallation(input: {
+  siteName: string;
+  siteTagline: string;
+  siteDescription: string;
+  adminName: string;
+  adminEmail: string;
+  adminPassword: string;
+  logo?: { mimeType: string; bytes: Uint8Array };
+  favicon?: { mimeType: string; bytes: Uint8Array };
+}) {
+  if (!installationStatus().needed) throw new Error("INSTALL_ALREADY_COMPLETED");
+  const database = getDatabase();
+  const now = new Date().toISOString();
+  const adminId = randomUUID();
+  database.transaction(() => {
+    database.prepare(`
+      INSERT INTO users (id, name, email, password_hash, role, bot_quota, status, created_at)
+      VALUES (?, ?, ?, ?, 'admin', 12, 'active', ?)
+    `).run(adminId, input.adminName.trim(), input.adminEmail.trim().toLowerCase(), hashPassword(input.adminPassword), now);
+    database.prepare(`
+      INSERT INTO user_memberships (user_id, plan_id, status, starts_at, expires_at, assigned_by, updated_at)
+      VALUES (?, 'pro', 'active', ?, NULL, NULL, ?)
+    `).run(adminId, now, now);
+    database.prepare(`
+      UPDATE system_settings SET
+        site_name = ?,
+        site_tagline = ?,
+        site_description = ?,
+        copyright_text = ?,
+        site_logo_mime = ?,
+        site_logo_blob = ?,
+        site_favicon_mime = ?,
+        site_favicon_blob = ?,
+        install_completed = 1,
+        updated_by = ?,
+        updated_at = ?
+      WHERE id = 1
+    `).run(
+      input.siteName,
+      input.siteTagline,
+      input.siteDescription,
+      input.siteName,
+      input.logo?.mimeType || null,
+      input.logo ? Buffer.from(input.logo.bytes) : null,
+      input.favicon?.mimeType || null,
+      input.favicon ? Buffer.from(input.favicon.bytes) : null,
+      adminId,
+      now,
+    );
+    writeAuditLog(adminId, "system.install.complete", "system_settings", "1", { siteName: input.siteName });
+  })();
+  const admin = database.prepare(`
+    SELECT users.*,
+      COALESCE(user_memberships.plan_id, 'free') AS membership_plan,
+      COALESCE(membership_plans.name, '免费版') AS membership_name
+    FROM users
+    LEFT JOIN user_memberships ON user_memberships.user_id = users.id AND user_memberships.status = 'active'
+    LEFT JOIN membership_plans ON membership_plans.id = user_memberships.plan_id
+    WHERE users.id = ?
+  `).get(adminId) as { id: string; name: string; email: string; role: "admin"; bot_quota: number; membership_plan: "pro"; membership_name: string };
+  return {
+    id: admin.id,
+    name: admin.name,
+    email: admin.email,
+    role: admin.role,
+    botQuota: admin.bot_quota,
+    membershipPlan: admin.membership_plan,
+    membershipName: admin.membership_name,
+  };
 }
 
 export function getPaymentConfig() {

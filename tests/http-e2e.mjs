@@ -210,6 +210,38 @@ async function runAssertions() {
   assert.equal(anonymousPluginCenter.status, 401);
   results.push("anonymous plugin center access is rejected");
 
+  const adminLogin = await jsonResponse("/api/auth/login", {
+    method: "POST",
+    headers: originHeaders,
+    body: JSON.stringify({ email: adminEmail, password: adminPassword }),
+  });
+  assert.equal(adminLogin.response.status, 200);
+  assert.equal(adminLogin.body.user.role, "admin");
+  const adminId = adminLogin.body.user.id;
+  const adminCookie = sessionCookie(adminLogin.response);
+  results.push("administrator login succeeds");
+
+  const emailSettings = await jsonResponse("/api/system-settings", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({
+      section: "email",
+      registrationVerificationEnabled: true,
+      loginEnabled: true,
+      smtpHost: "127.0.0.1",
+      smtpPort,
+      smtpSecure: false,
+      smtpStarttls: false,
+      smtpFrom: "noreply@starbot.local",
+      smtpUser: "",
+      smtpPass: "e2e-smtp-password",
+    }),
+  });
+  assert.equal(emailSettings.response.status, 200);
+  assert.equal(emailSettings.body.settings.email.smtpPassConfigured, true);
+  assert.equal(JSON.stringify(emailSettings.body).includes("e2e-smtp-password"), false);
+  results.push("administrator enables email verification without exposing SMTP secrets");
+
   const registerCodeRequest = await jsonResponse("/api/auth/email-code", {
     method: "POST",
     headers: originHeaders,
@@ -252,17 +284,6 @@ async function runAssertions() {
   }
   assert.equal((await fetch(`${baseUrl}/api/bots`, { headers: { Cookie: userCookie } })).status, 200);
   results.push("cross-origin registration, login, and logout are rejected without ending the session");
-
-  const adminLogin = await jsonResponse("/api/auth/login", {
-    method: "POST",
-    headers: originHeaders,
-    body: JSON.stringify({ email: adminEmail, password: adminPassword }),
-  });
-  assert.equal(adminLogin.response.status, 200);
-  assert.equal(adminLogin.body.user.role, "admin");
-  const adminId = adminLogin.body.user.id;
-  const adminCookie = sessionCookie(adminLogin.response);
-  results.push("administrator login succeeds");
 
   const regularSettings = await jsonResponse("/api/system-settings", { headers: { Cookie: userCookie } });
   assert.equal(regularSettings.response.status, 403);

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Check, Copy, CreditCard, FileImage, Globe2, KeyRound, LoaderCircle, MessageCircle, ReceiptText, Save, Settings2, ShieldCheck, UploadCloud } from "lucide-react";
+import { Check, Copy, CreditCard, FileImage, Globe2, KeyRound, LoaderCircle, Mail, MessageCircle, ReceiptText, Save, Settings2, ShieldCheck, UploadCloud } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,6 +38,7 @@ export function SystemSettingsView({ onSiteChange }: { onSiteChange: (site: Site
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [faviconFile, setFaviconFile] = useState<File | null>(null);
   const [secret, setSecret] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");
   const [epayKey, setEpayKey] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -105,6 +106,17 @@ export function SystemSettingsView({ onSiteChange }: { onSiteChange: (site: Site
     setSettings(body.settings); setSecret("");
   }
 
+  async function saveEmail() {
+    const current = settings;
+    if (!current) return;
+    const body = await requestJson<{ settings: AdminSystemSettings }>("/api/system-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ section: "email", ...current.email, smtpPass: smtpPass || undefined }),
+    });
+    setSettings(body.settings); setSmtpPass("");
+  }
+
   async function copyQQCallback() {
     if (!settings?.qq.redirectUri) return;
     await navigator.clipboard.writeText(settings.qq.redirectUri);
@@ -136,7 +148,7 @@ export function SystemSettingsView({ onSiteChange }: { onSiteChange: (site: Site
 
       <Tabs.Root defaultValue="site">
         <Tabs.List className="mb-5 flex gap-1 overflow-x-auto border-b" aria-label="系统设置分类">
-          {[["site", Globe2, "站点"], ["qq", MessageCircle, "QQ 登录"], ["payment", CreditCard, "支付"], ["plans", Settings2, "套餐"], ["orders", ReceiptText, "订单"]].map(([value, Icon, label]) => <Tabs.Trigger key={String(value)} value={String(value)} className="flex h-10 shrink-0 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-medium text-muted-foreground outline-none data-[state=active]:border-foreground data-[state=active]:text-foreground"><Icon size={14} />{String(label)}</Tabs.Trigger>)}
+          {[["site", Globe2, "站点"], ["qq", MessageCircle, "QQ 登录"], ["email", Mail, "邮箱"], ["payment", CreditCard, "支付"], ["plans", Settings2, "套餐"], ["orders", ReceiptText, "订单"]].map(([value, Icon, label]) => <Tabs.Trigger key={String(value)} value={String(value)} className="flex h-10 shrink-0 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-medium text-muted-foreground outline-none data-[state=active]:border-foreground data-[state=active]:text-foreground"><Icon size={14} />{String(label)}</Tabs.Trigger>)}
         </Tabs.List>
 
         <Tabs.Content value="site" className="outline-none">
@@ -218,6 +230,93 @@ export function SystemSettingsView({ onSiteChange }: { onSiteChange: (site: Site
                 <Button className="h-10 shrink-0 sm:min-w-40" onClick={() => void run("qq", saveQQ, "QQ 登录设置已保存")} disabled={busy === "qq"}>
                   {busy === "qq" ? <LoaderCircle className="animate-spin" size={14} /> : <KeyRound size={14} />}
                   {busy === "qq" ? "正在保存" : "保存 QQ 登录设置"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </Tabs.Content>
+
+        <Tabs.Content value="email" className="outline-none">
+          <Card className="max-w-4xl overflow-hidden">
+            <CardHeader className="border-b px-5 py-5 sm:px-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTitle className="flex items-center gap-2"><Mail size={15} />邮箱验证码与 SMTP</CardTitle>
+                    <Badge variant={settings.email.smtpPassConfigured ? "outline" : "warning"}>{settings.email.smtpPassConfigured ? "SMTP 密码已托管" : "缺少 SMTP 密码"}</Badge>
+                  </div>
+                  <CardDescription className="mt-2">控制注册邮箱验证、邮箱验证码登录，以及发送邮件使用的 SMTP 服务。</CardDescription>
+                </div>
+                <div className="grid shrink-0 gap-2 rounded-md border bg-muted/20 p-3">
+                  <label className="flex items-center justify-between gap-4 text-xs font-medium">
+                    <span>注册需验证邮箱</span>
+                    <Switch checked={settings.email.registrationVerificationEnabled} onCheckedChange={(enabled) => setSettings({ ...settings, email: { ...settings.email, registrationVerificationEnabled: enabled } })} aria-label="启用注册邮箱验证" />
+                  </label>
+                  <label className="flex items-center justify-between gap-4 text-xs font-medium">
+                    <span>邮箱验证码登录</span>
+                    <Switch checked={settings.email.loginEnabled} onCheckedChange={(enabled) => setSettings({ ...settings, email: { ...settings.email, loginEnabled: enabled } })} aria-label="启用邮箱验证码登录" />
+                  </label>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <section className="grid gap-5 px-5 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="space-y-2 md:col-span-2">
+                    <span className="block text-xs font-medium">SMTP 服务器</span>
+                    <Input className="h-10 mono-data" value={settings.email.smtpHost} onChange={(event) => setSettings({ ...settings, email: { ...settings.email, smtpHost: event.target.value } })} placeholder="smtp.example.com" />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="block text-xs font-medium">端口</span>
+                    <Input className="h-10 mono-data" type="number" min={1} max={65535} value={settings.email.smtpPort} onChange={(event) => setSettings({ ...settings, email: { ...settings.email, smtpPort: Number(event.target.value) || 587 } })} />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="block text-xs font-medium">发件邮箱</span>
+                    <Input className="h-10 mono-data" type="email" value={settings.email.smtpFrom} onChange={(event) => setSettings({ ...settings, email: { ...settings.email, smtpFrom: event.target.value } })} placeholder="bot@example.com" />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="block text-xs font-medium">SMTP 用户名</span>
+                    <Input className="h-10 mono-data" value={settings.email.smtpUser} onChange={(event) => setSettings({ ...settings, email: { ...settings.email, smtpUser: event.target.value } })} placeholder="通常为发件邮箱或账号名" />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="block text-xs font-medium">SMTP 密码</span>
+                    <Input className="h-10" type="password" value={smtpPass} onChange={(event) => setSmtpPass(event.target.value)} placeholder={settings.email.smtpPassConfigured ? "已配置，留空保持不变" : "请输入 SMTP 授权码或密码"} />
+                  </label>
+                  <div className="flex flex-wrap gap-3 md:col-span-2">
+                    <label className="flex h-10 items-center gap-3 rounded-md border bg-muted/20 px-3 text-xs font-medium">
+                      <Switch checked={settings.email.smtpSecure} onCheckedChange={(enabled) => setSettings({ ...settings, email: { ...settings.email, smtpSecure: enabled } })} aria-label="启用 SMTPS" />
+                      使用 SSL/TLS
+                    </label>
+                    <label className="flex h-10 items-center gap-3 rounded-md border bg-muted/20 px-3 text-xs font-medium">
+                      <Switch checked={settings.email.smtpStarttls} onCheckedChange={(enabled) => setSettings({ ...settings, email: { ...settings.email, smtpStarttls: enabled } })} aria-label="启用 STARTTLS" />
+                      STARTTLS
+                    </label>
+                  </div>
+                </div>
+                <div className="rounded-md border bg-muted/20 p-4">
+                  <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={15} />启用前检查</div>
+                  <div className="mt-4 space-y-3 text-xs">
+                    {[
+                      ["SMTP 服务器", Boolean(settings.email.smtpHost)],
+                      ["发件邮箱", Boolean(settings.email.smtpFrom)],
+                      ["SMTP 密码", settings.email.smtpPassConfigured || Boolean(smtpPass)],
+                    ].map(([label, ready]) => (
+                      <div key={String(label)} className="flex items-center justify-between gap-3">
+                        <span className="text-muted-foreground">{String(label)}</span>
+                        <Badge variant={ready ? "success" : "warning"}>{ready ? "就绪" : "待配置"}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-5 rounded-md border bg-background px-3 py-3 text-[11px] leading-5 text-muted-foreground">
+                    SMTP 密码会加密保存，接口只返回是否已配置；开启验证码功能后，登录页和注册页会按开关自动调整。
+                  </div>
+                </div>
+              </section>
+              <div className="flex flex-col gap-3 border-t bg-muted/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <p className="text-xs leading-5 text-muted-foreground">保存后，发送验证码接口立即使用当前 SMTP 配置。</p>
+                <Button className="h-10 shrink-0 sm:min-w-40" onClick={() => void run("email", saveEmail, "邮箱设置已保存")} disabled={busy === "email"}>
+                  {busy === "email" ? <LoaderCircle className="animate-spin" size={14} /> : <Save size={14} />}
+                  {busy === "email" ? "正在保存" : "保存邮箱设置"}
                 </Button>
               </div>
             </CardContent>

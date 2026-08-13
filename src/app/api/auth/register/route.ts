@@ -3,12 +3,13 @@ import { z } from "zod";
 import { consumeEmailVerificationCode } from "@/lib/email-code-service";
 import { RateLimitError, assertTrustedRequest, consumeRateLimit, rateLimitKey } from "@/lib/security";
 import { createSessionToken, registerUser, sessionCookieName, sessionMaxAgeSeconds } from "@/lib/session";
+import { getEmailConfig } from "@/lib/system-settings-service";
 
 const schema = z.object({
   name: z.string().trim().min(2).max(40),
   email: z.email().max(160),
   password: z.string().min(8).max(128),
-  code: z.string().regex(/^\d{6}$/),
+  code: z.string().regex(/^\d{6}$/).optional(),
 });
 
 export async function POST(request: Request) {
@@ -22,7 +23,10 @@ export async function POST(request: Request) {
 
   try {
     consumeRateLimit(rateLimitKey(request, "auth.register", parsed.data.email), 5, 60 * 60 * 1000);
-    consumeEmailVerificationCode({ email: parsed.data.email, purpose: "register", code: parsed.data.code });
+    if (getEmailConfig().registrationVerificationEnabled) {
+      if (!parsed.data.code) return NextResponse.json({ message: "请先完成邮箱验证码验证" }, { status: 400 });
+      consumeEmailVerificationCode({ email: parsed.data.email, purpose: "register", code: parsed.data.code });
+    }
     const user = registerUser(parsed.data);
     const response = NextResponse.json({ user }, { status: 201 });
     response.cookies.set(sessionCookieName, createSessionToken(user), {

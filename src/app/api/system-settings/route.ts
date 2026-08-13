@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { assertTrustedRequest } from "@/lib/security";
 import { getSession } from "@/lib/session";
-import { getAdminSystemSettings, updatePaymentSettings, updateQQLoginSettings, updateSiteSettings } from "@/lib/system-settings-service";
+import { getAdminSystemSettings, updateEmailSettings, updatePaymentSettings, updateQQLoginSettings, updateSiteSettings } from "@/lib/system-settings-service";
 
 const siteSchema = z.object({
   section: z.literal("site"),
@@ -36,7 +36,21 @@ const paymentSchema = z.object({
   manualInstructions: z.string().trim().max(1000),
 });
 
-const schema = z.discriminatedUnion("section", [siteSchema, qqSchema, paymentSchema]);
+const emailSchema = z.object({
+  section: z.literal("email"),
+  registrationVerificationEnabled: z.boolean(),
+  loginEnabled: z.boolean(),
+  smtpHost: z.string().trim().max(160),
+  smtpPort: z.number().int().min(1).max(65535),
+  smtpSecure: z.boolean(),
+  smtpStarttls: z.boolean(),
+  smtpFrom: z.email().or(z.literal("")),
+  smtpUser: z.string().trim().max(160),
+  smtpPass: z.string().max(300).optional(),
+  clearPass: z.boolean().optional(),
+});
+
+const schema = z.discriminatedUnion("section", [siteSchema, qqSchema, emailSchema, paymentSchema]);
 
 export async function GET() {
   const user = await getSession();
@@ -58,12 +72,15 @@ export async function PATCH(request: Request) {
       ? updateSiteSettings(user, input)
       : input.section === "qq"
         ? updateQQLoginSettings(user, input)
-        : updatePaymentSettings(user, input);
+        : input.section === "email"
+          ? updateEmailSettings(user, input)
+          : updatePaymentSettings(user, input);
     return NextResponse.json({ settings });
   } catch (error) {
     const code = error instanceof Error ? error.message : "";
     if (code === "ADMIN_REQUIRED") return NextResponse.json({ message: "需要管理员权限" }, { status: 403 });
     if (code === "QQ_LOGIN_CONFIG_INCOMPLETE") return NextResponse.json({ message: "启用 QQ 登录前需完整填写 AppID 和 App Secret" }, { status: 400 });
+    if (code === "EMAIL_CONFIG_INCOMPLETE") return NextResponse.json({ message: "启用邮箱验证码前需完整填写 SMTP 地址、发件邮箱和密码" }, { status: 400 });
     if (code === "PAYMENT_CONFIG_INCOMPLETE") return NextResponse.json({ message: "启用易支付前需完整填写网关地址、商户 ID 和商户密钥" }, { status: 400 });
     if (code === "PAYMENT_SANDBOX_PRODUCTION_DISABLED") return NextResponse.json({ message: "生产环境不能启用沙箱支付" }, { status: 400 });
     return NextResponse.json({ message: "系统设置保存失败" }, { status: 500 });

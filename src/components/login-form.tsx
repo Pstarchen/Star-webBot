@@ -10,7 +10,17 @@ import { Input } from "@/components/ui/input";
 import { SiteFooter } from "@/components/site-footer";
 import type { SitePublicSettings } from "@/types/platform";
 
-export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLoginEnabled: boolean; site: SitePublicSettings; initialError?: string }) {
+export function LoginForm({
+  qqLoginEnabled,
+  auth,
+  site,
+  initialError = "",
+}: {
+  qqLoginEnabled: boolean;
+  auth: { emailRegistrationVerificationEnabled: boolean; emailLoginEnabled: boolean };
+  site: SitePublicSettings;
+  initialError?: string;
+}) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [loginMethod, setLoginMethod] = useState<"password" | "email_code">("password");
   const [name, setName] = useState("");
@@ -30,7 +40,8 @@ export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLogin
     return () => window.clearInterval(timer);
   }, [codeCooldown]);
 
-  const usesEmailCode = mode === "register" || loginMethod === "email_code";
+  const registerNeedsCode = mode === "register" && auth.emailRegistrationVerificationEnabled;
+  const usesEmailCode = registerNeedsCode || loginMethod === "email_code";
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -62,6 +73,7 @@ export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLogin
 
   function changeMode(value: string) {
     setMode(value as "login" | "register");
+    if (value === "login" && !auth.emailLoginEnabled) setLoginMethod("password");
     setError("");
     setNotice("");
     setCode("");
@@ -120,7 +132,7 @@ export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLogin
               </Tabs.List>
             </Tabs.Root>
 
-            {mode === "login" && (
+            {mode === "login" && auth.emailLoginEnabled && (
               <div className="mt-5 grid grid-cols-2 gap-2 rounded-md border bg-muted/20 p-1">
                 <button
                   type="button"
@@ -205,7 +217,7 @@ export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLogin
               {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">{error}</div>}
 
               <Button type="submit" className="h-10 w-full" disabled={loading}>
-                {loading ? "正在处理..." : mode === "login" ? "进入控制台" : "验证邮箱并注册"}
+                {loading ? "正在处理..." : mode === "login" ? "进入控制台" : registerNeedsCode ? "验证邮箱并注册" : "创建账号"}
                 {!loading && <ArrowRight size={16} />}
               </Button>
             </form>

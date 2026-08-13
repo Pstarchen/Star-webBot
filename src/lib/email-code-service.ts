@@ -3,6 +3,7 @@ import net from "node:net";
 import tls from "node:tls";
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import { getDatabase, writeAuditLog } from "@/lib/database";
+import { getEmailConfig } from "@/lib/system-settings-service";
 import type { SessionUser } from "@/types/platform";
 
 export type EmailCodePurpose = "login" | "register";
@@ -36,22 +37,6 @@ function verificationCode() {
   return String(randomInt(0, 1_000_000)).padStart(6, "0");
 }
 
-function smtpConfigured() {
-  return Boolean(process.env.SMTP_HOST && process.env.SMTP_FROM);
-}
-
-function smtpPort() {
-  return Number(process.env.SMTP_PORT || (process.env.SMTP_SECURE === "true" ? 465 : 587));
-}
-
-function smtpSecure() {
-  return process.env.SMTP_SECURE === "true" || smtpPort() === 465;
-}
-
-function mailFrom() {
-  return process.env.SMTP_FROM || "";
-}
-
 function encodeSubject(value: string) {
   return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
 }
@@ -60,8 +45,10 @@ function sanitizeHeader(value: string) {
   return value.replace(/[\r\n]/g, " ").trim();
 }
 
-function smtpData(subject: string, to: string, text: string) {
-  const from = sanitizeHeader(mailFrom());
+type ResolvedEmailConfig = ReturnType<typeof getEmailConfig>;
+
+function smtpData(config: ResolvedEmailConfig, subject: string, to: string, text: string) {
+  const from = sanitizeHeader(config.smtpFrom);
   return [
     `From: ${from}`,
     `To: ${sanitizeHeader(to)}`,
@@ -113,11 +100,11 @@ function waitForResponse(socket: net.Socket | tls.TLSSocket, expected: number[])
   });
 }
 
-async function connectSmtp() {
-  const host = process.env.SMTP_HOST;
-  if (!host || !mailFrom()) throw new Error("EMAIL_SMTP_NOT_CONFIGURED");
-  const port = smtpPort();
-  const secure = smtpSecure();
+async function connectSmtp(config: ResolvedEmailConfig) {
+  const host = config.smtpHost;
+  if (!host || !config.smtpFrom) throw new Error("EMAIL_SMTP_NOT_CONFIGURED");
+  const port = config.smtpPort;
+  const secure = config.smtpSecure || port === 465;
   const socket = secure
     ? tls.connect({ host, port, servername: host })
     : net.connect({ host, port });
@@ -129,49 +116,49 @@ async function connectSmtp() {
   return socket;
 }
 
-async function sendSmtpMail(to: string, subject: string, text: string) {
-  const socket = await connectSmtp();
+async function sendSmtpMail(config: ResolvedEmailConfig, to: string, subject: string, text: string) {
+  const socket = await connectSmtp(config);
   const hostName = process.env.SMTP_HELO || "localhost";
   try {
     writeLine(socket, `EHLO ${hostName}`);
     await waitForResponse(socket, [250]);
 
-    if (!smtpSecure() && process.env.SMTP_STARTTLS !== "false") {
+    if (!config.smtpSecure && config.smtpStarttls) {
       writeLine(socket, "STARTTLS");
       await waitForResponse(socket, [220]);
-      const secureSocket = tls.connect({ socket, servername: process.env.SMTP_HOST });
+      const secureSocket = tls.connect({ socket, servername: config.smtpHost });
       await new Promise<void>((resolve, reject) => {
         secureSocket.once("secureConnect", resolve);
         secureSocket.once("error", reject);
       });
       writeLine(secureSocket, `EHLO ${hostName}`);
       await waitForResponse(secureSocket, [250]);
-      await finishSmtpMail(secureSocket, to, subject, text);
+      await finishSmtpMail(config, secureSocket, to, subject, text);
       return;
     }
 
-    await finishSmtpMail(socket, to, subject, text);
+    await finishSmtpMail(config, socket, to, subject, text);
   } finally {
     socket.end();
   }
 }
 
-async function finishSmtpMail(socket: net.Socket | tls.TLSSocket, to: string, subject: string, text: string) {
-  if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+async function finishSmtpMail(config: ResolvedEmailConfig, socket: net.Socket | tls.TLSSocket, to: string, subject: string, text: string) {
+  if (config.smtpUser && config.smtpPass) {
     writeLine(socket, "AUTH LOGIN");
     await waitForResponse(socket, [334]);
-    writeLine(socket, Buffer.from(process.env.SMTP_USER).toString("base64"));
+    writeLine(socket, Buffer.from(config.smtpUser).toString("base64"));
     await waitForResponse(socket, [334]);
-    writeLine(socket, Buffer.from(process.env.SMTP_PASS).toString("base64"));
+    writeLine(socket, Buffer.from(config.smtpPass).toString("base64"));
     await waitForResponse(socket, [235]);
   }
-  writeLine(socket, `MAIL FROM:<${mailFrom()}>`);
+  writeLine(socket, `MAIL FROM:<${config.smtpFrom}>`);
   await waitForResponse(socket, [250]);
   writeLine(socket, `RCPT TO:<${to}>`);
   await waitForResponse(socket, [250, 251]);
   writeLine(socket, "DATA");
   await waitForResponse(socket, [354]);
-  socket.write(`${smtpData(subject, to, text).replace(/\r?\n\./g, "\r\n..")}\r\n.\r\n`);
+  socket.write(`${smtpData(config, subject, to, text).replace(/\r?\n\./g, "\r\n..")}\r\n.\r\n`);
   await waitForResponse(socket, [250]);
   writeLine(socket, "QUIT");
 }
@@ -192,8 +179,9 @@ async function deliverCode(email: string, purpose: EmailCodePurpose, code: strin
     return;
   }
 
-  if (!smtpConfigured()) throw new Error("EMAIL_SMTP_NOT_CONFIGURED");
-  await sendSmtpMail(email, subject, text);
+  const config = getEmailConfig();
+  if (!config.configured) throw new Error("EMAIL_SMTP_NOT_CONFIGURED");
+  await sendSmtpMail(config, email, subject, text);
 }
 
 export function latestEmailCodeForTest(email: string, purpose: EmailCodePurpose) {

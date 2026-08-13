@@ -3,6 +3,7 @@ import { z } from "zod";
 import { consumeEmailVerificationCode } from "@/lib/email-code-service";
 import { RateLimitError, assertTrustedRequest, consumeRateLimit, rateLimitKey } from "@/lib/security";
 import { authenticate, authenticateWithEmail, createSessionToken, deleteCurrentSession, deleteSessionsForUser, sessionCookieName, sessionMaxAgeSeconds } from "@/lib/session";
+import { getEmailConfig } from "@/lib/system-settings-service";
 
 const passwordSchema = z.object({
   method: z.literal("password").optional(),
@@ -38,6 +39,9 @@ export async function POST(request: Request) {
 
   let user = null;
   try {
+    if (parsed.data.method === "email_code" && !getEmailConfig().loginEnabled) {
+      return NextResponse.json({ message: "管理员尚未开启邮箱验证码登录" }, { status: 403 });
+    }
     user = parsed.data.method === "email_code"
       ? (() => {
         consumeEmailVerificationCode({ email: parsed.data.email, purpose: "login", code: parsed.data.code });

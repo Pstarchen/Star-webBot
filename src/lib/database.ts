@@ -265,6 +265,16 @@ function migrate(database: Database.Database) {
       epay_pid TEXT NOT NULL DEFAULT '',
       epay_key_cipher TEXT,
       manual_payment_instructions TEXT NOT NULL DEFAULT '',
+      email_registration_verification_enabled INTEGER NOT NULL DEFAULT 0,
+      email_login_enabled INTEGER NOT NULL DEFAULT 0,
+      smtp_host TEXT NOT NULL DEFAULT '',
+      smtp_port INTEGER NOT NULL DEFAULT 587 CHECK(smtp_port BETWEEN 1 AND 65535),
+      smtp_secure INTEGER NOT NULL DEFAULT 0,
+      smtp_starttls INTEGER NOT NULL DEFAULT 1,
+      smtp_from TEXT NOT NULL DEFAULT '',
+      smtp_user TEXT NOT NULL DEFAULT '',
+      smtp_pass_cipher TEXT,
+      install_completed INTEGER NOT NULL DEFAULT 0,
       updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       updated_at TEXT NOT NULL
     );
@@ -422,6 +432,18 @@ function migrate(database: Database.Database) {
   if (!marketplaceColumns.some((column) => column.name === "display_category")) database.exec("ALTER TABLE plugin_market_listings ADD COLUMN display_category TEXT");
   if (!marketplaceColumns.some((column) => column.name === "display_tags_json")) database.exec("ALTER TABLE plugin_market_listings ADD COLUMN display_tags_json TEXT");
 
+  const settingsColumns = database.prepare("PRAGMA table_info(system_settings)").all() as Array<{ name: string }>;
+  if (!settingsColumns.some((column) => column.name === "email_registration_verification_enabled")) database.exec("ALTER TABLE system_settings ADD COLUMN email_registration_verification_enabled INTEGER NOT NULL DEFAULT 0");
+  if (!settingsColumns.some((column) => column.name === "email_login_enabled")) database.exec("ALTER TABLE system_settings ADD COLUMN email_login_enabled INTEGER NOT NULL DEFAULT 0");
+  if (!settingsColumns.some((column) => column.name === "smtp_host")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_host TEXT NOT NULL DEFAULT ''");
+  if (!settingsColumns.some((column) => column.name === "smtp_port")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_port INTEGER NOT NULL DEFAULT 587 CHECK(smtp_port BETWEEN 1 AND 65535)");
+  if (!settingsColumns.some((column) => column.name === "smtp_secure")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_secure INTEGER NOT NULL DEFAULT 0");
+  if (!settingsColumns.some((column) => column.name === "smtp_starttls")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_starttls INTEGER NOT NULL DEFAULT 1");
+  if (!settingsColumns.some((column) => column.name === "smtp_from")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_from TEXT NOT NULL DEFAULT ''");
+  if (!settingsColumns.some((column) => column.name === "smtp_user")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_user TEXT NOT NULL DEFAULT ''");
+  if (!settingsColumns.some((column) => column.name === "smtp_pass_cipher")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_pass_cipher TEXT");
+  if (!settingsColumns.some((column) => column.name === "install_completed")) database.exec("ALTER TABLE system_settings ADD COLUMN install_completed INTEGER NOT NULL DEFAULT 0");
+
   const pluginColumns = database.prepare("PRAGMA table_info(plugins)").all() as Array<{ name: string }>;
   if (!pluginColumns.some((column) => column.name === "signing_secret_cipher")) {
     database.pragma("foreign_keys = OFF");
@@ -501,6 +523,10 @@ function migrate(database: Database.Database) {
     VALUES (1, 'StarBot', 'QQ Bot Console', '面向团队的多用户、多机器人、可扩展 QQ 官方机器人管理与开发平台。', 'StarBot', ?, 'sandbox', '提交订单后请联系管理员，并提供订单号完成审核。', ?)
   `).run(process.env.NODE_ENV === "production" ? 0 : 1, now);
 
+  if ((database.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number }).count > 0) {
+    database.prepare("UPDATE system_settings SET install_completed = 1 WHERE id = 1 AND install_completed = 0").run();
+  }
+
   database.prepare(`
     INSERT OR IGNORE INTO user_memberships
       (user_id, plan_id, status, starts_at, expires_at, assigned_by, updated_at)
@@ -571,8 +597,9 @@ function seedDevelopmentUsers(database: Database.Database) {
 
   const now = new Date().toISOString();
   const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@starbot.local";
-  const adminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD || (process.env.NODE_ENV === "production" ? "" : "starbot2026");
-  if (!adminPassword) throw new Error("BOOTSTRAP_ADMIN_PASSWORD is required when initializing a production database");
+  const bootstrapConfigured = Boolean(process.env.BOOTSTRAP_ADMIN_EMAIL || process.env.BOOTSTRAP_ADMIN_PASSWORD || process.env.BOOTSTRAP_ADMIN_NAME);
+  const adminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD || (bootstrapConfigured && process.env.NODE_ENV !== "production" ? "starbot2026" : "");
+  if (!adminPassword) return;
   const insert = database.prepare(`
     INSERT INTO users (id, name, email, password_hash, role, bot_quota, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
@@ -583,6 +610,7 @@ function seedDevelopmentUsers(database: Database.Database) {
     if (process.env.NODE_ENV !== "production") {
       insert.run(randomUUID(), "开发者", "dev@starbot.local", hashPassword("developer2026"), "developer", 5, now);
     }
+    database.prepare("UPDATE system_settings SET install_completed = 1, updated_at = ? WHERE id = 1").run(now);
   });
   transaction();
 }

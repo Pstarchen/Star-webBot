@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { sendEmailVerificationCode } from "@/lib/email-code-service";
 import { RateLimitError, assertTrustedRequest, consumeRateLimit, rateLimitKey } from "@/lib/security";
+import { getEmailConfig } from "@/lib/system-settings-service";
 
 const schema = z.object({
   email: z.email().max(160),
@@ -19,6 +20,13 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ message: "邮箱地址不正确" }, { status: 400 });
 
   try {
+    const config = getEmailConfig();
+    if (parsed.data.purpose === "login" && !config.loginEnabled) {
+      return NextResponse.json({ message: "管理员尚未开启邮箱验证码登录" }, { status: 403 });
+    }
+    if (parsed.data.purpose === "register" && !config.registrationVerificationEnabled) {
+      return NextResponse.json({ message: "当前注册不需要邮箱验证码" }, { status: 403 });
+    }
     consumeRateLimit(rateLimitKey(request, "auth.email_code", `${parsed.data.purpose}:${parsed.data.email}`), 3, 15 * 60 * 1000);
     return NextResponse.json(await sendEmailVerificationCode(parsed.data));
   } catch (error) {
