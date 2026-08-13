@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getBotClient } from "@/lib/bot-service";
-import { describeQQMediaApiError, isQQMediaUploadError, parseMediaUploadRequest, QQ_MEDIA_MAX_BYTES, removeParsedMediaUpload, uploadQQMedia, type ParsedMediaUpload } from "@/lib/qq-media";
+import { getBotClient, identifyBotTargetType } from "@/lib/bot-service";
+import { describeQQMediaApiError, isQQMediaUploadError, parseMediaUploadRequest, qqMediaApiHttpStatus, QQ_MEDIA_MAX_BYTES, removeParsedMediaUpload, uploadQQMedia, type ParsedMediaUpload } from "@/lib/qq-media";
 import { isQQApiError } from "@/lib/qq-api";
 import { assertTrustedRequest } from "@/lib/security";
 import { getSession } from "@/lib/session";
@@ -17,19 +17,28 @@ export async function POST(request: Request, context: { params: Promise<{ botId:
 
   let upload: ParsedMediaUpload | null = null;
   try {
-    const client = getBotClient(user, (await context.params).botId);
+    const botId = (await context.params).botId;
+    const client = getBotClient(user, botId);
     upload = await parseMediaUploadRequest(request);
+    const knownTargetType = identifyBotTargetType(user, botId, upload.targetOpenid);
+    if (knownTargetType && knownTargetType !== upload.targetType) {
+      return NextResponse.json({
+        message: "目标 OpenID 与消息场景不匹配",
+        detail: knownTargetType === "group" ? "该 OpenID 来自群聊事件，请选择群聊" : "该 OpenID 来自单聊事件，请选择单聊用户",
+        code: "MEDIA_TARGET_TYPE_MISMATCH",
+      }, { status: 400 });
+    }
     return NextResponse.json(await uploadQQMedia(client, upload));
   } catch (error) {
     if (isQQMediaUploadError(error)) {
       if (isQQApiError(error.mediaCause)) {
-        return NextResponse.json(describeQQMediaApiError(error.mediaCause, error.stage), { status: error.mediaCause.status >= 500 ? 502 : 400 });
+        return NextResponse.json(describeQQMediaApiError(error.mediaCause, error.stage), { status: qqMediaApiHttpStatus(error.mediaCause) });
       }
       if (error.mediaCause instanceof Error && error.mediaCause.message.startsWith("MEDIA_")) {
         return NextResponse.json({ message: "富媒体上传失败", stage: error.stage, detail: error.mediaCause.message }, { status: 400 });
       }
     }
-    if (isQQApiError(error)) return NextResponse.json(describeQQMediaApiError(error, null), { status: error.status >= 500 ? 502 : 400 });
+    if (isQQApiError(error)) return NextResponse.json(describeQQMediaApiError(error, null), { status: qqMediaApiHttpStatus(error) });
     if (error instanceof Error && error.message === "BOT_NOT_FOUND") return NextResponse.json({ message: "机器人不存在" }, { status: 404 });
     if (error instanceof Error && error.message === "MEDIA_FILE_TOO_LARGE") return NextResponse.json({ message: "文件不能超过 200MB" }, { status: 413 });
     if (error instanceof Error && error.message.startsWith("MEDIA_")) return NextResponse.json({ message: "富媒体上传参数或传输失败", detail: error.message }, { status: 400 });

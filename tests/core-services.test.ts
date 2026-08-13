@@ -27,6 +27,7 @@ let securityModule: typeof import("@/lib/security");
 let sessionModule: typeof import("@/lib/session");
 let systemSettingsModule: typeof import("@/lib/system-settings-service");
 let userServiceModule: typeof import("@/lib/user-service");
+let emailCodeModule: typeof import("@/lib/email-code-service");
 
 beforeAll(async () => {
   process.env.DATABASE_PATH = databasePath;
@@ -34,7 +35,7 @@ beforeAll(async () => {
   process.env.BOOTSTRAP_ADMIN_PASSWORD = "admin-password-2026";
   process.env.ALLOW_PRIVATE_WEBHOOKS = "false";
   process.env.ALLOW_INSECURE_WEBHOOKS = "false";
-  [databaseModule, botServiceModule, cryptoModule, eventRetentionModule, eventIngestionModule, gatewayCoordinationModule, membershipModule, hostedPluginRuntimeModule, hostedPluginServiceModule, passwordModule, pluginModule, qqApiModule, qqMediaModule, qqWebhookModule, qqWebhookTokenModule, rawUploadModule, securityModule, sessionModule, systemSettingsModule, userServiceModule] = await Promise.all([
+  [databaseModule, botServiceModule, cryptoModule, eventRetentionModule, eventIngestionModule, gatewayCoordinationModule, membershipModule, hostedPluginRuntimeModule, hostedPluginServiceModule, passwordModule, pluginModule, qqApiModule, qqMediaModule, qqWebhookModule, qqWebhookTokenModule, rawUploadModule, securityModule, sessionModule, systemSettingsModule, userServiceModule, emailCodeModule] = await Promise.all([
     import("@/lib/database"),
     import("@/lib/bot-service"),
     import("@/lib/crypto-vault"),
@@ -55,6 +56,7 @@ beforeAll(async () => {
     import("@/lib/session"),
     import("@/lib/system-settings-service"),
     import("@/lib/user-service"),
+    import("@/lib/email-code-service"),
   ]);
   databaseModule.getDatabase();
 });
@@ -76,6 +78,22 @@ describe("authentication and membership", () => {
     const user = sessionModule.registerUser({ name: "测试用户", email: "user@example.com", password: "strong-password" });
     expect(user).toMatchObject({ botQuota: 1, membershipPlan: "free", membershipName: "免费版" });
     expect(sessionModule.authenticate("user@example.com", "strong-password")).toMatchObject({ id: user.id, membershipPlan: "free" });
+  });
+
+  it("sends and consumes email codes for registration and login", async () => {
+    const email = `email-code-${randomUUID()}@example.com`;
+    await emailCodeModule.sendEmailVerificationCode({ email, purpose: "register" });
+    const registerCode = emailCodeModule.latestEmailCodeForTest(email, "register")?.code;
+    expect(registerCode).toMatch(/^\d{6}$/);
+    emailCodeModule.consumeEmailVerificationCode({ email, purpose: "register", code: registerCode! });
+    const user = sessionModule.registerUser({ name: "邮箱验证码用户", email, password: "strong-password" });
+    expect(() => emailCodeModule.consumeEmailVerificationCode({ email, purpose: "register", code: registerCode! })).toThrow("EMAIL_CODE_INVALID");
+
+    await emailCodeModule.sendEmailVerificationCode({ email, purpose: "login" });
+    const loginCode = emailCodeModule.latestEmailCodeForTest(email, "login")?.code;
+    expect(loginCode).toMatch(/^\d{6}$/);
+    emailCodeModule.consumeEmailVerificationCode({ email, purpose: "login", code: loginCode! }, user);
+    expect(sessionModule.authenticateWithEmail(email)).toMatchObject({ id: user.id, email });
   });
 
   it("allows admins to assign plans and denies regular users", () => {
@@ -200,6 +218,16 @@ describe("system settings and membership billing", () => {
     const stored = databaseModule.getDatabase().prepare("SELECT qq_app_secret_cipher, epay_key_cipher FROM system_settings WHERE id = 1").get() as { qq_app_secret_cipher: string; epay_key_cipher: string };
     expect(stored.qq_app_secret_cipher).not.toContain(qqSecret);
     expect(stored.epay_key_cipher).not.toContain(epayKey);
+
+    const originalEncryptionKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    process.env.CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 91).toString("base64");
+    try {
+      expect(membershipModule.membershipCenter(regular).payment).toEqual({ enabled: true, provider: "epay", manualInstructions: "" });
+      expect(() => systemSettingsModule.getPaymentConfig()).toThrow();
+    } finally {
+      if (originalEncryptionKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = originalEncryptionKey;
+    }
   });
 
   it.each([
@@ -857,6 +885,34 @@ describe("request security", () => {
       detail: "文件格式与所选媒体类型不匹配",
       traceId: "trace-format",
     });
+    const invalidTargetError = new qqApiModule.QQApiError("QQ API request failed", 500, "trace-invalid-target", { code: 11255, message: "invalid request" });
+    expect(qqMediaModule.describeQQMediaApiError(invalidTargetError, "prepare")).toEqual({
+      message: "富媒体预上传准备失败",
+      code: "11255",
+      stage: "prepare",
+      detail: "目标 OpenID 无效、场景选择错误，或目标不属于当前机器人",
+      traceId: "trace-invalid-target",
+    });
+    let invalidTargetAttempts = 0;
+    const invalidTargetClient = {
+      request: async () => {
+        invalidTargetAttempts += 1;
+        throw invalidTargetError;
+      },
+    };
+    await expect(qqMediaModule.uploadQQMedia(invalidTargetClient as unknown as import("@/lib/qq-api").QQBotApiClient, {
+      tempPath,
+      fileName: "retry.bin",
+      fileSize: bytes.length,
+      fileType: 4,
+      targetType: "group",
+      targetOpenid: "invalid-target",
+      srvSendMsg: false,
+      md5: createHash("md5").update(bytes).digest("hex"),
+      sha1: createHash("sha1").update(bytes).digest("hex"),
+      md5First10m: createHash("md5").update(bytes).digest("hex"),
+    })).rejects.toMatchObject({ name: "QQMediaUploadError", stage: "prepare", mediaCause: invalidTargetError });
+    expect(invalidTargetAttempts).toBe(1);
     let permanentAttempts = 0;
     const permanentClient = {
       request: async () => {
@@ -877,5 +933,39 @@ describe("request security", () => {
       md5First10m: createHash("md5").update(bytes).digest("hex"),
     })).rejects.toMatchObject({ name: "QQMediaUploadError", stage: "prepare", mediaCause: permanentError });
     expect(permanentAttempts).toBe(1);
+  });
+
+  it("identifies whether an event OpenID belongs to c2c or group", () => {
+    const user = sessionModule.registerUser({ name: "Target Owner", email: `target-owner-${randomUUID()}@example.com`, password: "strong-password" });
+    const database = databaseModule.getDatabase();
+    const botId = randomUUID();
+    const now = new Date().toISOString();
+    database.prepare(`INSERT INTO bots (id, user_id, name, app_id, client_secret_cipher, environment, intents, status, created_at, updated_at) VALUES (?, ?, 'Target Bot', ?, ?, 'sandbox', 0, 'offline', ?, ?)`)
+      .run(botId, user.id, `target-app-${botId}`, cryptoModule.encryptSecret("target-secret"), now, now);
+    botServiceModule.recordEvent(botId, {
+      type: "C2C_MESSAGE_CREATE",
+      scene: "单聊",
+      payload: { d: { id: "target-c2c-message", author: { user_openid: "target-c2c-openid" } } },
+    });
+    botServiceModule.recordEvent(botId, {
+      type: "GROUP_AT_MESSAGE_CREATE",
+      scene: "群聊",
+      payload: { d: { id: "target-group-message", group_openid: "target-group-openid" } },
+    });
+
+    expect(botServiceModule.identifyBotTargetType(user, botId, "target-c2c-openid")).toBe("c2c");
+    expect(botServiceModule.identifyBotTargetType(user, botId, "target-group-openid")).toBe("group");
+    expect(botServiceModule.identifyBotTargetType(user, botId, "unknown-openid")).toBeNull();
+    expect(botServiceModule.listBotMediaTargets(user, botId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ targetType: "group", targetOpenid: "target-group-openid" }),
+      expect.objectContaining({ targetType: "c2c", targetOpenid: "target-c2c-openid" }),
+    ]));
+    const serverSideId = "server-side-id-is-not-an-openid";
+    botServiceModule.recordEvent(botId, {
+      type: "C2C_MESSAGE_CREATE",
+      scene: "单聊",
+      payload: { d: { id: "legacy-c2c-message", author: { id: serverSideId } } },
+    });
+    expect(botServiceModule.identifyBotTargetType(user, botId, serverSideId)).toBeNull();
   });
 });

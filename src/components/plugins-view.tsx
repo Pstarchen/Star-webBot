@@ -12,6 +12,7 @@ import {
   Download,
   FileArchive,
   PackageCheck,
+  Pencil,
   Search,
   Settings2,
   ShieldCheck,
@@ -139,15 +140,27 @@ function ConfigField({ field, value, onChange }: { field: HostedPluginConfigFiel
   );
 }
 
-function MarketCard({ plugin, onDetails, onInstall }: { plugin: PluginMarketplaceItem; onDetails: () => void; onInstall: () => void }) {
+function MarketCard({ plugin, onDetails, onInstall, onEdit, onRemove }: {
+  plugin: PluginMarketplaceItem;
+  onDetails: () => void;
+  onInstall: () => void;
+  onEdit?: () => void;
+  onRemove?: () => void;
+}) {
   return (
     <Card className="flex min-h-[286px] flex-col overflow-hidden">
       <CardContent className="flex flex-1 flex-col p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="grid h-10 w-10 place-items-center rounded-md bg-foreground text-background"><Boxes size={18} /></div>
-          <div className="flex flex-wrap justify-end gap-1.5">
-            {plugin.featured && <Badge variant="default">精选</Badge>}
-            <Badge variant="outline">{plugin.priceCents ? `¥${(plugin.priceCents / 100).toFixed(2)}` : "免费"}</Badge>
+          <div className="flex items-start gap-2">
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {plugin.featured && <Badge variant="default">精选</Badge>}
+              <Badge variant="outline">{plugin.priceCents ? `¥${(plugin.priceCents / 100).toFixed(2)}` : "免费"}</Badge>
+            </div>
+            {onEdit && onRemove && <div className="flex shrink-0 gap-1 border-l pl-2">
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onEdit} aria-label={`编辑 ${plugin.name}`} title="编辑市场信息"><Pencil size={14} /></Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-red-600 hover:bg-red-50 hover:text-red-700" onClick={onRemove} aria-label={`删除 ${plugin.name}`} title="删除市场条目"><Trash2 size={14} /></Button>
+            </div>}
           </div>
         </div>
         <div className="mt-5 flex min-w-0 items-center gap-2">
@@ -185,6 +198,16 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewApproved, setReviewApproved] = useState(true);
   const [reviewNote, setReviewNote] = useState("");
+  const [marketEdit, setMarketEdit] = useState<PluginMarketplaceItem | null>(null);
+  const [marketName, setMarketName] = useState("");
+  const [marketDescription, setMarketDescription] = useState("");
+  const [marketAuthor, setMarketAuthor] = useState("");
+  const [marketCategory, setMarketCategory] = useState("");
+  const [marketTags, setMarketTags] = useState("");
+  const [marketFeatured, setMarketFeatured] = useState(false);
+  const [marketPriceYuan, setMarketPriceYuan] = useState("0.00");
+  const [marketRemove, setMarketRemove] = useState<PluginMarketplaceItem | null>(null);
+  const [marketRemoveReason, setMarketRemoveReason] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
 
@@ -225,6 +248,18 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
     setConfigInstallation(installation);
     setConfigValues({ ...installation.config });
     setConfigPriority(String(installation.priority));
+    setError("");
+  }
+
+  function openMarketEdit(plugin: PluginMarketplaceItem) {
+    setMarketEdit(plugin);
+    setMarketName(plugin.name);
+    setMarketDescription(plugin.description);
+    setMarketAuthor(plugin.author);
+    setMarketCategory(plugin.category);
+    setMarketTags(plugin.tags.join("，"));
+    setMarketFeatured(plugin.featured);
+    setMarketPriceYuan((plugin.priceCents / 100).toFixed(2));
     setError("");
   }
 
@@ -310,6 +345,46 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
     });
   }
 
+  async function saveMarketplace(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!marketEdit) return;
+    const saved = await runAction(`market-edit:${marketEdit.id}`, async () => {
+      await requestJson(`/api/plugin-marketplace/${marketEdit.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: marketName,
+          description: marketDescription,
+          author: marketAuthor,
+          category: marketCategory,
+          tags: marketTags.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean),
+          featured: marketFeatured,
+          priceCents: Math.round(Number(marketPriceYuan) * 100),
+        }),
+      });
+      await onRefresh();
+    });
+    if (saved) setMarketEdit(null);
+  }
+
+  async function removeFromMarketplace(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!marketRemove) return;
+    const removed = await runAction(`market-remove:${marketRemove.id}`, async () => {
+      await requestJson(`/api/plugin-marketplace/${marketRemove.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: marketRemoveReason || undefined }),
+      });
+      await onRefresh();
+    });
+    if (removed) {
+      if (detailPlugin?.id === marketRemove.id) setDetailPlugin(null);
+      setMarketRemove(null);
+      setMarketRemoveReason("");
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -344,7 +419,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
                     <div className="flex min-w-0 items-start gap-3">
                       <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-muted"><Boxes size={16} /></div>
                       <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">{installation.name}</h3><Badge variant="outline" className="mono-data">v{installation.version}</Badge><Badge variant={installation.enabled ? "success" : "secondary"}>{installation.enabled ? "运行中" : "已停用"}</Badge></div>
+                        <div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">{installation.name}</h3><Badge variant="outline" className="mono-data">v{installation.version}</Badge><Badge variant={installation.enabled ? "success" : installation.projectStatus === "suspended" ? "destructive" : "secondary"}>{installation.enabled ? "运行中" : installation.projectStatus === "suspended" ? "市场已下架" : "已停用"}</Badge></div>
                         <p className="mt-1.5 line-clamp-1 text-xs text-muted-foreground">{installation.description}</p>
                         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground"><span>{installation.botName}</span><span>优先级 {installation.priority}</span><span>{installation.events.length} 个事件</span></div>
                       </div>
@@ -354,7 +429,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
                       {installation.lastRun && <div className={`mt-1.5 truncate ${installation.lastRun.status === "failed" ? "text-red-600" : "text-muted-foreground"}`}>{installation.lastRun.status === "failed" ? installation.lastRun.error : `${installation.lastRun.durationMs}ms · ${installation.lastRun.actionCount} 个动作`}</div>}
                     </div>
                     <div className="flex items-center justify-between gap-2 lg:justify-end">
-                      <Switch checked={installation.enabled} disabled={busy === `toggle:${installation.id}`} onCheckedChange={(enabled) => void updateInstallation(installation.id, { enabled }, `toggle:${installation.id}`)} aria-label={installation.enabled ? "停用插件" : "启用插件"} />
+                      <Switch checked={installation.enabled} disabled={installation.projectStatus === "suspended" || busy === `toggle:${installation.id}`} onCheckedChange={(enabled) => void updateInstallation(installation.id, { enabled }, `toggle:${installation.id}`)} aria-label={installation.projectStatus === "suspended" ? "插件已被管理员下架" : installation.enabled ? "停用插件" : "启用插件"} />
                       <Button variant="outline" size="sm" onClick={() => openConfig(installation)}><Settings2 size={14} />配置</Button>
                       <Button variant="ghost" size="icon" disabled={busy === `delete:${installation.id}`} onClick={() => void uninstall(installation)} aria-label="卸载插件"><Trash2 size={15} /></Button>
                     </div>
@@ -373,7 +448,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
             <Select value={category} onValueChange={setCategory} options={categories.map((value) => ({ value, label: value === "all" ? "全部分类" : value }))} ariaLabel="筛选插件分类" className="sm:w-44" />
           </div>
           {filteredMarketplace.length ? (
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{filteredMarketplace.map((plugin) => <MarketCard key={plugin.id} plugin={plugin} onDetails={() => setDetailPlugin(plugin)} onInstall={() => openInstall({ projectId: plugin.id, versionId: plugin.versionId, name: plugin.name })} />)}</div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{filteredMarketplace.map((plugin) => <MarketCard key={plugin.id} plugin={plugin} onDetails={() => setDetailPlugin(plugin)} onInstall={() => openInstall({ projectId: plugin.id, versionId: plugin.versionId, name: plugin.name })} onEdit={userRole === "admin" ? () => openMarketEdit(plugin) : undefined} onRemove={userRole === "admin" ? () => { setMarketRemove(plugin); setMarketRemoveReason(""); setError(""); } : undefined} />)}</div>
           ) : (
             <Card><EmptyState icon={Search} title="没有匹配的插件" description="调整搜索词或分类后重试。" /></Card>
           )}
@@ -411,6 +486,10 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
       <Dialog.Root open={Boolean(configInstallation)} onOpenChange={(open) => !open && setConfigInstallation(null)}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" /><Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-32px)] w-[calc(100%-32px)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6"><DialogHeader title={`配置 ${configInstallation?.name || "插件"}`} description={`${configInstallation?.botName || "机器人"} · 配置保存后立即用于下一次事件。`} /><form onSubmit={saveConfig} className="mt-5 space-y-4"><label className="block"><span className="field-label">执行优先级</span><Input type="number" min={1} max={100} value={configPriority} onChange={(event) => setConfigPriority(event.target.value)} required /></label>{configInstallation?.configSchema.map((field) => <ConfigField key={field.key} field={field} value={configValues[field.key] ?? field.default} onChange={(value) => setConfigValues((current) => ({ ...current, [field.key]: value }))} />)}{configInstallation?.configSchema.length === 0 && <div className="border bg-muted/30 px-3 py-4 text-xs text-muted-foreground">该插件没有可配置项。</div>}<InlineError message={error} /><Button type="submit" className="w-full" disabled={busy === `config:${configInstallation?.id}`}><Settings2 size={14} />保存配置</Button></form></Dialog.Content></Dialog.Portal></Dialog.Root>
 
       <Dialog.Root open={Boolean(detailPlugin)} onOpenChange={(open) => !open && setDetailPlugin(null)}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" /><Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-32px)] w-[calc(100%-32px)] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6"><DialogHeader title={detailPlugin?.name || "插件详情"} description={`${detailPlugin?.author || ""} · ${detailPlugin?.category || ""} · v${detailPlugin?.version || ""}`} />{detailPlugin && <div className="mt-5 space-y-5"><p className="text-sm leading-6 text-muted-foreground">{detailPlugin.description}</p><div><div className="data-label">事件与权限</div><div className="mt-2 flex flex-wrap gap-1.5">{[...detailPlugin.events, ...detailPlugin.permissions].map((item) => <Badge key={item} variant="secondary" className="mono-data">{item}</Badge>)}</div></div>{detailPlugin.commands.length > 0 && <div><div className="data-label">使用指令</div><div className="mt-2 divide-y border">{detailPlugin.commands.map((command) => <div key={command.name} className="flex items-start justify-between gap-4 px-3 py-3 text-xs"><span className="font-medium">{command.name}</span><span className="text-right text-muted-foreground">{command.description}</span></div>)}</div></div>}<Button className="w-full" onClick={() => openInstall({ projectId: detailPlugin.id, versionId: detailPlugin.versionId, name: detailPlugin.name })}><Download size={14} />安装到机器人</Button></div>}</Dialog.Content></Dialog.Portal></Dialog.Root>
+
+      <Dialog.Root open={Boolean(marketEdit)} onOpenChange={(open) => !open && setMarketEdit(null)}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" /><Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-32px)] w-[calc(100%-32px)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6"><DialogHeader title="编辑市场插件" description="修改市场展示与定价，不会更改已审核的插件代码、权限或版本哈希。" /><form onSubmit={saveMarketplace} className="mt-5 space-y-4"><label className="block"><span className="field-label">插件名称</span><Input value={marketName} onChange={(event) => setMarketName(event.target.value)} maxLength={80} required /></label><label className="block"><span className="field-label">市场说明</span><Textarea value={marketDescription} onChange={(event) => setMarketDescription(event.target.value)} maxLength={500} required className="min-h-28 resize-y" /></label><div className="grid gap-4 sm:grid-cols-2"><label className="block"><span className="field-label">作者</span><Input value={marketAuthor} onChange={(event) => setMarketAuthor(event.target.value)} maxLength={80} required /></label><label className="block"><span className="field-label">分类</span><Input value={marketCategory} onChange={(event) => setMarketCategory(event.target.value)} maxLength={40} required /></label></div><div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_140px]"><label className="block"><span className="field-label">标签</span><Input value={marketTags} onChange={(event) => setMarketTags(event.target.value)} placeholder="多个标签使用逗号分隔" /><span className="mt-1.5 block text-[11px] text-muted-foreground">最多 8 个标签，每个标签不超过 24 个字符。</span></label><label className="block"><span className="field-label">价格（元）</span><Input type="number" min={0} max={1_000_000} step="0.01" value={marketPriceYuan} onChange={(event) => setMarketPriceYuan(event.target.value)} required /></label></div><label className="flex items-center justify-between gap-4 border bg-muted/25 px-3 py-3"><span><span className="block text-xs font-medium">精选推荐</span><span className="mt-1 block text-[11px] text-muted-foreground">精选插件优先显示在市场列表。</span></span><Switch checked={marketFeatured} onCheckedChange={setMarketFeatured} aria-label="设置为精选插件" /></label><InlineError message={error} /><Button type="submit" className="w-full" disabled={busy === `market-edit:${marketEdit?.id}`}><Pencil size={14} />{busy === `market-edit:${marketEdit?.id}` ? "正在保存..." : "保存市场信息"}</Button></form></Dialog.Content></Dialog.Portal></Dialog.Root>
+
+      <Dialog.Root open={Boolean(marketRemove)} onOpenChange={(open) => !open && setMarketRemove(null)}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" /><Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 w-[calc(100%-32px)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6"><DialogHeader title="删除插件市场条目" description={`删除 ${marketRemove?.name || "该插件"} 的市场条目后，所有正在运行的安装实例会立即停用。`} /><form onSubmit={removeFromMarketplace} className="mt-5 space-y-4"><div className="border border-red-200 bg-red-50 px-3 py-3 text-xs leading-5 text-red-700">市场条目会被删除；插件项目、版本、安装配置和运行历史保留，普通用户不能继续安装或启用。</div><label className="block"><span className="field-label">删除原因</span><Textarea value={marketRemoveReason} onChange={(event) => setMarketRemoveReason(event.target.value)} maxLength={500} placeholder="可选，将记录到项目和审计日志" className="min-h-24 resize-y" /></label><InlineError message={error} /><Button type="submit" variant="destructive" className="w-full" disabled={busy === `market-remove:${marketRemove?.id}`}><Trash2 size={14} />{busy === `market-remove:${marketRemove?.id}` ? "正在删除..." : "确认删除市场条目"}</Button></form></Dialog.Content></Dialog.Portal></Dialog.Root>
 
       <Dialog.Root open={Boolean(reviewId)} onOpenChange={(open) => !open && setReviewId(null)}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" /><Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 w-[calc(100%-32px)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6"><DialogHeader title="插件市场审核" description="审核结论会更新项目状态；通过后对应版本立即进入市场。" /><form onSubmit={submitReview} className="mt-5 space-y-4"><div className="grid grid-cols-2 gap-2"><Button type="button" variant={reviewApproved ? "default" : "outline"} onClick={() => setReviewApproved(true)}><Check size={14} />通过</Button><Button type="button" variant={!reviewApproved ? "destructive" : "outline"} onClick={() => setReviewApproved(false)}><X size={14} />驳回</Button></div><label className="block"><span className="field-label">审核备注{!reviewApproved ? " *" : ""}</span><Textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} required={!reviewApproved} className="min-h-28 resize-y" /></label><InlineError message={error} /><Button type="submit" className="w-full" disabled={busy.startsWith("admin-review:")}><ShieldCheck size={14} />提交审核结论</Button></form></Dialog.Content></Dialog.Portal></Dialog.Root>
     </div>

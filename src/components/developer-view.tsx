@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
   BookOpen,
@@ -28,7 +28,7 @@ import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { QQ_OPENAPI_ENDPOINTS, type QQOpenApiEndpointId } from "@/lib/qq-openapi-catalog";
 import { cn } from "@/lib/utils";
-import type { Bot } from "@/types/platform";
+import type { Bot, BotMediaTarget } from "@/types/platform";
 
 const pluginCode = `StarBot.definePlugin({
   async onEvent(event, sdk) {
@@ -77,6 +77,15 @@ function readableErrorDetail(value: unknown) {
   return [code, message].filter(Boolean).join(" · ");
 }
 
+function maskedOpenid(value: string) {
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 6)}...${value.slice(-6)}`;
+}
+
+function mediaTargetKey(target: Pick<BotMediaTarget, "targetType" | "targetOpenid">) {
+  return `${target.targetType}:${target.targetOpenid}`;
+}
+
 const capabilities = [
   [MessageSquareReply, "回复消息", "文本、Markdown、Ark 与键盘"],
   [Database, "保存状态", "按安装实例隔离的 KV 存储"],
@@ -108,12 +117,43 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
   const [apiSending, setApiSending] = useState(false);
   const [mediaTargetType, setMediaTargetType] = useState<"c2c" | "group">("c2c");
   const [mediaTargetOpenid, setMediaTargetOpenid] = useState("");
+  const [mediaTargetPreset, setMediaTargetPreset] = useState("manual");
+  const [mediaTargets, setMediaTargets] = useState<BotMediaTarget[]>([]);
   const [mediaFileType, setMediaFileType] = useState<"1" | "2" | "3" | "4">("1");
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaSendDirectly, setMediaSendDirectly] = useState(false);
   const [mediaSending, setMediaSending] = useState(false);
   const [mediaError, setMediaError] = useState("");
   const [mediaResult, setMediaResult] = useState<unknown>(null);
+
+  useEffect(() => {
+    if (!botId) return;
+    const controller = new AbortController();
+    fetch(`/api/bots/${botId}/media-targets`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({})) as { targets?: BotMediaTarget[] };
+        if (!response.ok) throw new Error("会话目标加载失败");
+        const targets = body.targets || [];
+        setMediaTargets(targets);
+        const first = targets[0];
+        if (first) {
+          setMediaTargetType(first.targetType);
+          setMediaTargetOpenid(first.targetOpenid);
+          setMediaTargetPreset(mediaTargetKey(first));
+        } else {
+          setMediaTargetOpenid("");
+          setMediaTargetPreset("manual");
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setMediaTargets([]);
+          setMediaTargetPreset("manual");
+          setMediaTargetOpenid("");
+        }
+      });
+    return () => controller.abort();
+  }, [botId]);
 
   function selectOfficialEndpoint(value: string) {
     setApiEndpointId(value);
@@ -378,9 +418,32 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
         </CardHeader>
         <CardContent>
           <form onSubmit={uploadMedia} className="grid gap-4 md:grid-cols-2">
-            <label className="block"><span className="field-label">消息场景</span><Select value={mediaTargetType} onValueChange={(value) => setMediaTargetType(value as "c2c" | "group")} options={[{ value: "c2c", label: "单聊用户" }, { value: "group", label: "群聊" }]} ariaLabel="选择富媒体消息场景" /></label>
+            <label className="block md:col-span-2">
+              <span className="field-label">机器人</span>
+              <Select
+                value={botId}
+                onValueChange={(value) => { setBotId(value); setMediaTargets([]); setMediaTargetPreset("manual"); setMediaTargetOpenid(""); }}
+                options={bots.map((bot) => ({ value: bot.id, label: `${bot.name} · ${bot.environment === "production" ? "正式使用" : "测试使用"}` }))}
+                placeholder="请选择机器人"
+                ariaLabel="选择富媒体上传机器人"
+              />
+            </label>
+            <label className="block md:col-span-2"><span className="field-label">最近会话目标</span><Select value={mediaTargetPreset} onValueChange={(value) => {
+              setMediaTargetPreset(value);
+              const selected = mediaTargets.find((target) => mediaTargetKey(target) === value);
+              if (selected) {
+                setMediaTargetType(selected.targetType);
+                setMediaTargetOpenid(selected.targetOpenid);
+              } else {
+                setMediaTargetOpenid("");
+              }
+            }} options={[
+              ...mediaTargets.map((target) => ({ value: mediaTargetKey(target), label: `${target.targetType === "group" ? "群聊" : "单聊"} · ${maskedOpenid(target.targetOpenid)} · ${new Date(target.lastSeenAt).toLocaleString("zh-CN")}` })),
+              { value: "manual", label: mediaTargets.length ? "手动输入其他 OpenID" : "暂无事件目标，手动输入 OpenID" },
+            ]} placeholder="请选择会话目标" ariaLabel="选择富媒体会话目标" /></label>
+            {mediaTargetPreset === "manual" && <label className="block"><span className="field-label">消息场景</span><Select value={mediaTargetType} onValueChange={(value) => { setMediaTargetType(value as "c2c" | "group"); setMediaTargetOpenid(""); }} options={[{ value: "c2c", label: "单聊用户" }, { value: "group", label: "群聊" }]} ariaLabel="选择富媒体消息场景" /></label>}
             <label className="block"><span className="field-label">媒体类型</span><Select value={mediaFileType} onValueChange={(value) => setMediaFileType(value as typeof mediaFileType)} options={[{ value: "1", label: "图片 PNG/JPG" }, { value: "2", label: "视频 MP4" }, { value: "3", label: "语音 SILK" }, { value: "4", label: "普通文件" }]} ariaLabel="选择媒体类型" /></label>
-            <label className="block md:col-span-2"><span className="field-label">目标 OpenID</span><Input value={mediaTargetOpenid} onChange={(event) => setMediaTargetOpenid(event.target.value)} className="mono-data text-xs" required /></label>
+            {mediaTargetPreset === "manual" && <label className="block md:col-span-2"><span className="field-label">目标 OpenID</span><Input value={mediaTargetOpenid} onChange={(event) => setMediaTargetOpenid(event.target.value)} className="mono-data text-xs" placeholder={mediaTargetType === "group" ? "群事件中的 group_openid" : "单聊事件中的 author.user_openid"} required /></label>}
             <div className="md:col-span-2"><span className="field-label">本地文件</span><FilePicker file={mediaFile} onFileChange={setMediaFile} browseLabel="选择媒体" emptyLabel="尚未选择媒体文件" helperText="支持图片、视频、语音与普通文件，最大 200MB" disabled={mediaSending} /></div>
             <div className="flex items-center gap-2 text-xs md:col-span-2"><Switch checked={mediaSendDirectly} onCheckedChange={setMediaSendDirectly} aria-label="上传完成后直接发送消息" /><span>上传完成后直接发送消息</span></div>
             {mediaError && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 md:col-span-2">{mediaError}</div>}

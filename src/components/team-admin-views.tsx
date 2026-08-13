@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import * as Progress from "@radix-ui/react-progress";
-import { ArrowDownToLine, Bot as BotIcon, Crown, Minus, Plus, Search, ShieldCheck, Users } from "lucide-react";
+import { ArrowDownToLine, Bot as BotIcon, Crown, Search, ShieldCheck, SlidersHorizontal, Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -111,6 +111,7 @@ export function AdminView({ currentUserId, initialMembers, onMembersChange }: { 
   const members = initialMembers;
   const [error, setError] = useState("");
   const [busyMemberId, setBusyMemberId] = useState("");
+  const [quotaDrafts, setQuotaDrafts] = useState<Record<string, string>>({});
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
   const totalQuota = useMemo(() => members.reduce((sum, member) => sum + member.botQuota, 0), [members]);
   const totalBots = useMemo(() => members.reduce((sum, member) => sum + member.botCount, 0), [members]);
@@ -179,10 +180,10 @@ export function AdminView({ currentUserId, initialMembers, onMembersChange }: { 
     }
   }
 
-  async function changeQuota(memberId: string, delta: number) {
+  async function changeQuota(memberId: string, botQuota: number) {
     const member = members.find((item) => item.id === memberId);
     if (!member) return;
-    const botQuota = Math.max(member.botCount, Math.min(999, member.botQuota + delta));
+    botQuota = Math.max(member.botCount, Math.min(999, botQuota));
     if (botQuota === member.botQuota) return;
 
     setBusyMemberId(memberId);
@@ -196,6 +197,7 @@ export function AdminView({ currentUserId, initialMembers, onMembersChange }: { 
       const body = await response.json().catch(() => ({})) as { message?: string };
       if (!response.ok) throw new Error(body.message || "配额更新失败");
       onMembersChange(members.map((item) => item.id === memberId ? { ...item, botQuota } : item));
+      setQuotaDrafts((current) => ({ ...current, [memberId]: String(botQuota) }));
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "配额更新失败");
     } finally {
@@ -217,8 +219,8 @@ export function AdminView({ currentUserId, initialMembers, onMembersChange }: { 
   return (
     <div>
       <PageHeader
-        title="系统与配额"
-        description="设置每位用户可添加的机器人数量，配额不能低于当前已用数量。"
+        title="用户设置"
+        description="系统管理员可统一设置所有用户的会员、角色、状态与机器人配额。"
         action={<Button variant="outline" onClick={exportQuotas}><ArrowDownToLine size={15} />导出配额</Button>}
       />
 
@@ -261,60 +263,68 @@ export function AdminView({ currentUserId, initialMembers, onMembersChange }: { 
         </div>
       </Card>
 
-      <Card className="mb-5 overflow-hidden">
-        <CardHeader className="border-b">
-          <CardTitle>账号权限</CardTitle>
-          <CardDescription>调整角色与账号状态；停用会立即失效该用户会话并断开其机器人。</CardDescription>
-        </CardHeader>
-        <div className="divide-y">
-          {members.map((member) => {
-            const busy = busyMemberId === member.id;
-            const protectedAccount = member.id === currentUserId;
-            return (
-              <div key={member.id} className="grid gap-4 px-5 py-4 md:grid-cols-[minmax(180px,1fr)_140px_140px] md:items-center">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{member.name}</span>{protectedAccount && <Badge variant="outline">当前账号</Badge>}</div>
-                  <div className="mt-1 truncate text-[10px] text-muted-foreground">{member.email}</div>
-                </div>
-                <Select value={member.role} onValueChange={(value) => void changeAccess(member.id, { role: value as UserRole })} disabled={busy || protectedAccount} options={[{ value: "admin", label: "管理员" }, { value: "developer", label: "开发者" }, { value: "operator", label: "运营" }]} ariaLabel={member.name + "的角色"} className="text-xs" />
-                <Select value={member.status === "suspended" ? "suspended" : "active"} onValueChange={(value) => void changeAccess(member.id, { status: value as "active" | "suspended" })} disabled={busy || protectedAccount} options={[{ value: "active", label: "正常" }, { value: "suspended", label: "停用" }]} ariaLabel={member.name + "的账号状态"} className="text-xs" />
-              </div>
-            );
-          })}
-        </div>
-      </Card>
-
       <Card className="overflow-hidden">
         <CardHeader className="border-b">
-          <CardTitle>用户机器人配额</CardTitle>
-          <CardDescription>变更会立即作用于服务端的新建机器人校验。</CardDescription>
+          <CardTitle className="flex items-center gap-2"><SlidersHorizontal size={15} />用户设置台</CardTitle>
+          <CardDescription>变更会立即作用于服务端校验；停用账号会失效会话并断开该用户机器人。</CardDescription>
         </CardHeader>
         {members.length ? (
           <div className="divide-y">
             {members.map((member) => {
               const usage = member.botQuota > 0 ? Math.min(100, Math.round((member.botCount / member.botQuota) * 100)) : member.botCount > 0 ? 100 : 0;
               const busy = busyMemberId === member.id;
+              const protectedAccount = member.id === currentUserId;
+              const quotaDraft = quotaDrafts[member.id] ?? String(member.botQuota);
+              const quotaValue = Number(quotaDraft);
+              const quotaChanged = Number.isFinite(quotaValue) && quotaValue !== member.botQuota;
               return (
-                <div key={member.id} className="grid gap-4 px-5 py-4 lg:grid-cols-[minmax(180px,1fr)_140px_minmax(150px,0.8fr)_150px] lg:items-center">
-                  <div className="min-w-0"><div className="truncate text-sm font-medium">{member.name}</div><div className="mt-1 truncate text-[10px] text-muted-foreground">{member.email}</div></div>
-                  <Select
-                    value={member.membershipPlan}
-                    onValueChange={(value) => void changeMembership(member.id, value as MembershipPlanId)}
-                    disabled={busy || !plans.length}
-                    options={plans.map((plan) => ({ value: plan.id, label: plan.name }))}
-                    className="text-xs"
-                    ariaLabel={member.name + "的会员套餐"}
-                  />
+                <div key={member.id} className="grid gap-4 px-5 py-5 xl:grid-cols-[minmax(220px,1.15fr)_150px_150px_150px_minmax(180px,0.9fr)_140px] xl:items-center">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium">{member.name}</span>
+                      <MemberStatusBadge status={member.status} />
+                      {protectedAccount && <Badge variant="outline">当前账号</Badge>}
+                    </div>
+                    <div className="mt-1 truncate text-[10px] text-muted-foreground">{member.email}</div>
+                  </div>
                   <div>
-                    <div className="mb-2 flex justify-between text-[10px]"><span className="text-muted-foreground">已使用</span><span className="mono-data">{member.botCount} / {member.botQuota}</span></div>
+                    <div className="mb-1.5 text-[10px] text-muted-foreground xl:hidden">会员</div>
+                    <Select
+                      value={member.membershipPlan}
+                      onValueChange={(value) => void changeMembership(member.id, value as MembershipPlanId)}
+                      disabled={busy || !plans.length}
+                      options={plans.map((plan) => ({ value: plan.id, label: plan.name }))}
+                      className="text-xs"
+                      ariaLabel={member.name + "的会员套餐"}
+                    />
+                  </div>
+                  <div>
+                    <div className="mb-1.5 text-[10px] text-muted-foreground xl:hidden">角色</div>
+                    <Select value={member.role} onValueChange={(value) => void changeAccess(member.id, { role: value as UserRole })} disabled={busy || protectedAccount} options={[{ value: "admin", label: "管理员" }, { value: "developer", label: "开发者" }, { value: "operator", label: "运营" }]} ariaLabel={member.name + "的角色"} className="text-xs" />
+                  </div>
+                  <div>
+                    <div className="mb-1.5 text-[10px] text-muted-foreground xl:hidden">状态</div>
+                    <Select value={member.status === "suspended" ? "suspended" : "active"} onValueChange={(value) => void changeAccess(member.id, { status: value as "active" | "suspended" })} disabled={busy || protectedAccount} options={[{ value: "active", label: "正常" }, { value: "suspended", label: "停用" }]} ariaLabel={member.name + "的账号状态"} className="text-xs" />
+                  </div>
+                  <div>
+                    <div className="mb-2 flex justify-between text-[10px]"><span className="text-muted-foreground">机器人用量</span><span className="mono-data">{member.botCount} / {member.botQuota}</span></div>
                     <Progress.Root value={usage} className="h-1.5 overflow-hidden rounded-full bg-muted">
                       <Progress.Indicator className={usage >= 90 ? "h-full bg-warning transition-transform" : "h-full bg-foreground transition-transform"} style={{ transform: "translateX(-" + (100 - usage) + "%)" }} />
                     </Progress.Root>
                   </div>
-                  <div className="flex items-center justify-start gap-2 md:justify-end">
-                    <Button variant="outline" size="icon" className="h-8 w-8" disabled={busy || member.botQuota <= member.botCount} onClick={() => void changeQuota(member.id, -1)} aria-label="减少配额"><Minus size={13} /></Button>
-                    <div className="mono-data grid h-8 w-12 place-items-center rounded-md border text-xs font-semibold">{member.botQuota}</div>
-                    <Button variant="outline" size="icon" className="h-8 w-8" disabled={busy || member.botQuota >= 999} onClick={() => void changeQuota(member.id, 1)} aria-label="增加配额"><Plus size={13} /></Button>
+                  <div className="flex items-center gap-2 xl:justify-end">
+                    <Input
+                      type="number"
+                      min={member.botCount}
+                      max={999}
+                      value={quotaDraft}
+                      onChange={(event) => setQuotaDrafts((current) => ({ ...current, [member.id]: event.target.value }))}
+                      className="mono-data h-8 w-20 text-xs"
+                      aria-label={member.name + "的机器人配额"}
+                    />
+                    <Button size="sm" variant={quotaChanged ? "default" : "outline"} disabled={busy || !quotaChanged || !Number.isFinite(quotaValue) || quotaValue < member.botCount || quotaValue > 999} onClick={() => void changeQuota(member.id, quotaValue)}>
+                      保存
+                    </Button>
                   </div>
                 </div>
               );

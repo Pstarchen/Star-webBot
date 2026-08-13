@@ -61,6 +61,16 @@ type InstallationExecutionRow = {
   entry_code: string;
 };
 
+export type MarketplacePluginUpdate = {
+  name?: string;
+  description?: string;
+  author?: string;
+  category?: string;
+  tags?: string[];
+  featured?: boolean;
+  priceCents?: number;
+};
+
 function parseJson<T>(value: string, fallback: T): T {
   try { return JSON.parse(value) as T; }
   catch { return fallback; }
@@ -119,7 +129,8 @@ function readInstallationKv(installationId: string) {
 function marketplaceItems(user: SessionUser): PluginMarketplaceItem[] {
   const rows = getDatabase().prepare(`
     SELECT projects.*, versions.id AS version_id, versions.version, versions.manifest_json,
-      listings.featured, listings.price_cents,
+      listings.featured, listings.price_cents, listings.display_name, listings.display_description,
+      listings.display_author, listings.display_category, listings.display_tags_json,
       (SELECT COUNT(*) FROM plugin_installations WHERE project_id = projects.id) AS installs,
       (SELECT COUNT(*) FROM plugin_installations WHERE project_id = projects.id AND enabled = 1) AS enabled_bots
     FROM plugin_market_listings listings
@@ -127,7 +138,11 @@ function marketplaceItems(user: SessionUser): PluginMarketplaceItem[] {
     JOIN plugin_versions versions ON versions.id = listings.version_id
     WHERE projects.status = 'published'
     ORDER BY listings.featured DESC, listings.published_at DESC
-  `).all() as Array<ProjectRow & { version_id: string; version: string; manifest_json: string; featured: number; price_cents: number; installs: number; enabled_bots: number }>;
+  `).all() as Array<ProjectRow & {
+    version_id: string; version: string; manifest_json: string; featured: number; price_cents: number;
+    display_name: string | null; display_description: string | null; display_author: string | null;
+    display_category: string | null; display_tags_json: string | null; installs: number; enabled_bots: number;
+  }>;
   const installed = getDatabase().prepare("SELECT project_id, bot_id FROM plugin_installations WHERE user_id = ?").all(user.id) as Array<{ project_id: string; bot_id: string }>;
   const installedByProject = new Map<string, string[]>();
   for (const row of installed) installedByProject.set(row.project_id, [...(installedByProject.get(row.project_id) || []), row.bot_id]);
@@ -137,11 +152,11 @@ function marketplaceItems(user: SessionUser): PluginMarketplaceItem[] {
       id: row.id,
       versionId: row.version_id,
       slug: manifest.id,
-      name: manifest.name,
-      description: manifest.description,
-      author: manifest.author,
-      category: manifest.category,
-      tags: manifest.tags,
+      name: row.display_name || manifest.name,
+      description: row.display_description || manifest.description,
+      author: row.display_author || manifest.author,
+      category: row.display_category || manifest.category,
+      tags: row.display_tags_json ? parseJson(row.display_tags_json, manifest.tags) : manifest.tags,
       version: row.version,
       featured: Boolean(row.featured),
       priceCents: row.price_cents,
@@ -159,7 +174,7 @@ function marketplaceItems(user: SessionUser): PluginMarketplaceItem[] {
 
 function installations(user: SessionUser): HostedPluginInstallation[] {
   const rows = getDatabase().prepare(`
-    SELECT installations.*, bots.name AS bot_name, projects.slug, projects.name, projects.description,
+    SELECT installations.*, bots.name AS bot_name, projects.slug, projects.name, projects.description, projects.status AS project_status,
       projects.author, projects.category, projects.tags_json, versions.version, versions.manifest_json,
       runs.status AS run_status, runs.duration_ms AS run_duration_ms, runs.action_count AS run_action_count,
       runs.error AS run_error, runs.created_at AS run_created_at
@@ -174,7 +189,7 @@ function installations(user: SessionUser): HostedPluginInstallation[] {
     ORDER BY installations.updated_at DESC
   `).all(user.id) as Array<{
     id: string; project_id: string; version_id: string; bot_id: string; bot_name: string; slug: string; name: string;
-    description: string; author: string; category: string; tags_json: string; version: string; manifest_json: string;
+    description: string; author: string; category: string; tags_json: string; version: string; manifest_json: string; project_status: ProjectRow["status"];
     enabled: number; priority: number; failure_count: number; last_error: string | null; last_run_at: string | null;
     run_status: "success" | "skipped" | "failed" | null; run_duration_ms: number | null; run_action_count: number | null;
     run_error: string | null; run_created_at: string | null;
@@ -194,6 +209,7 @@ function installations(user: SessionUser): HostedPluginInstallation[] {
       category: manifest.category,
       tags: manifest.tags,
       version: row.version,
+      projectStatus: row.project_status,
       enabled: Boolean(row.enabled),
       priority: row.priority,
       failureCount: row.failure_count,
@@ -354,8 +370,9 @@ export function updatePluginInstallation(user: SessionUser, installationId: stri
   const versionId = input.versionId || installation.version_id;
   const version = database.prepare("SELECT * FROM plugin_versions WHERE id = ? AND project_id = ? AND status = 'active'").get(versionId, installation.project_id) as VersionRow | undefined;
   if (!version) throw new Error("PLUGIN_VERSION_NOT_FOUND");
-  const project = database.prepare("SELECT owner_user_id FROM plugin_projects WHERE id = ?").get(installation.project_id) as { owner_user_id: string } | undefined;
+  const project = database.prepare("SELECT owner_user_id, status FROM plugin_projects WHERE id = ?").get(installation.project_id) as { owner_user_id: string; status: ProjectRow["status"] } | undefined;
   if (!project) throw new Error("PLUGIN_PROJECT_NOT_FOUND");
+  if (input.enabled === true && project.status === "suspended") throw new Error("PLUGIN_PROJECT_SUSPENDED");
   if (user.role !== "admin" && project.owner_user_id !== user.id) {
     const listing = database.prepare("SELECT version_id FROM plugin_market_listings WHERE project_id = ?").get(installation.project_id) as { version_id: string } | undefined;
     if (listing?.version_id !== version.id) throw new Error("PLUGIN_VERSION_NOT_AVAILABLE");
@@ -387,8 +404,78 @@ export function uninstallPlugin(user: SessionUser, installationId: string) {
   writeAuditLog(user.id, "hosted_plugin.uninstall", "plugin_installation", installationId, { projectId: installation.project_id, botId: installation.bot_id });
 }
 
+function normalizedMarketplaceText(value: string, field: string, maxLength: number) {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxLength) throw new Error(`PLUGIN_MARKETPLACE_${field}_INVALID`);
+  return normalized;
+}
+
+export function updateMarketplacePlugin(user: SessionUser, projectId: string, input: MarketplacePluginUpdate) {
+  if (user.role !== "admin") throw new Error("ADMIN_REQUIRED");
+  if (!Object.values(input).some((value) => value !== undefined)) throw new Error("PLUGIN_MARKETPLACE_UPDATE_EMPTY");
+  const database = getDatabase();
+  const listing = database.prepare(`
+    SELECT listings.*, versions.manifest_json
+    FROM plugin_market_listings listings
+    JOIN plugin_versions versions ON versions.id = listings.version_id
+    WHERE listings.project_id = ?
+  `).get(projectId) as {
+    project_id: string; featured: number; price_cents: number; display_name: string | null; display_description: string | null;
+    display_author: string | null; display_category: string | null; display_tags_json: string | null; manifest_json: string;
+  } | undefined;
+  if (!listing) throw new Error("PLUGIN_MARKETPLACE_NOT_FOUND");
+  const manifest = parseManifest(listing.manifest_json);
+  const tags = input.tags === undefined
+    ? (listing.display_tags_json ? parseJson(listing.display_tags_json, manifest.tags) : manifest.tags)
+    : [...new Set(input.tags.map((tag) => tag.trim()).filter(Boolean))];
+  if (tags.length > 8 || tags.some((tag) => tag.length > 24)) throw new Error("PLUGIN_MARKETPLACE_TAGS_INVALID");
+  if (input.priceCents !== undefined && (!Number.isSafeInteger(input.priceCents) || input.priceCents < 0 || input.priceCents > 100_000_000)) {
+    throw new Error("PLUGIN_MARKETPLACE_PRICE_INVALID");
+  }
+  const next = {
+    name: input.name === undefined ? listing.display_name || manifest.name : normalizedMarketplaceText(input.name, "NAME", 80),
+    description: input.description === undefined ? listing.display_description || manifest.description : normalizedMarketplaceText(input.description, "DESCRIPTION", 500),
+    author: input.author === undefined ? listing.display_author || manifest.author : normalizedMarketplaceText(input.author, "AUTHOR", 80),
+    category: input.category === undefined ? listing.display_category || manifest.category : normalizedMarketplaceText(input.category, "CATEGORY", 40),
+    tags,
+    featured: input.featured === undefined ? Boolean(listing.featured) : input.featured,
+    priceCents: input.priceCents === undefined ? listing.price_cents : input.priceCents,
+  };
+  const now = new Date().toISOString();
+  database.prepare(`
+    UPDATE plugin_market_listings SET display_name = ?, display_description = ?, display_author = ?,
+      display_category = ?, display_tags_json = ?, featured = ?, price_cents = ?, updated_at = ? WHERE project_id = ?
+  `).run(next.name, next.description, next.author, next.category, JSON.stringify(next.tags), next.featured ? 1 : 0, next.priceCents, now, projectId);
+  writeAuditLog(user.id, "hosted_plugin.marketplace.update", "plugin_project", projectId, next);
+  return next;
+}
+
+export function removeMarketplacePlugin(user: SessionUser, projectId: string, reason?: string) {
+  if (user.role !== "admin") throw new Error("ADMIN_REQUIRED");
+  const database = getDatabase();
+  const listing = database.prepare("SELECT project_id, version_id FROM plugin_market_listings WHERE project_id = ?").get(projectId) as { project_id: string; version_id: string } | undefined;
+  if (!listing) throw new Error("PLUGIN_MARKETPLACE_NOT_FOUND");
+  const reviewNote = reason?.trim().slice(0, 500) || "管理员已删除插件市场条目";
+  const now = new Date().toISOString();
+  let disabledInstallations = 0;
+  let cancelledReviews = 0;
+  database.transaction(() => {
+    disabledInstallations = database.prepare("UPDATE plugin_installations SET enabled = 0, updated_at = ? WHERE project_id = ? AND enabled = 1").run(now, projectId).changes;
+    cancelledReviews = database.prepare(`
+      UPDATE plugin_market_reviews SET status = 'rejected', review_note = ?, reviewed_by = ?, reviewed_at = ?
+      WHERE project_id = ? AND status = 'pending'
+    `).run(reviewNote, user.id, now, projectId).changes;
+    database.prepare("DELETE FROM plugin_market_listings WHERE project_id = ?").run(projectId);
+    database.prepare("UPDATE plugin_projects SET status = 'suspended', review_note = ?, updated_at = ? WHERE id = ?").run(reviewNote, now, projectId);
+  })();
+  const result = { disabledInstallations, cancelledReviews };
+  writeAuditLog(user.id, "hosted_plugin.marketplace.remove", "plugin_project", projectId, { ...result, versionId: listing.version_id, reason: reviewNote });
+  return result;
+}
+
 export function requestPluginReview(user: SessionUser, projectId: string, versionId?: string) {
   const project = accessibleProject(user, projectId);
+  if (project.status === "suspended") throw new Error("PLUGIN_PROJECT_SUSPENDED");
   const database = getDatabase();
   const version = versionId
     ? database.prepare("SELECT * FROM plugin_versions WHERE id = ? AND project_id = ? AND status = 'active'").get(versionId, projectId) as VersionRow | undefined

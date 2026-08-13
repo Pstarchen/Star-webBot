@@ -4,7 +4,7 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
 import { getDatabase, writeAuditLog } from "@/lib/database";
 import { QQBotApiClient } from "@/lib/qq-api";
 import { deriveQQWebhookToken } from "@/lib/qq-webhook-token";
-import type { Bot, BotConnectionMode, EventLog, SessionUser } from "@/types/platform";
+import type { Bot, BotConnectionMode, BotMediaTarget, EventLog, SessionUser } from "@/types/platform";
 
 type BotRow = {
   id: string;
@@ -223,6 +223,43 @@ const replyEventTypes = {
   c2c: new Set(["C2C_MESSAGE_CREATE"]),
   group: new Set(["GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"]),
 } as const;
+
+function mediaTargetFromEvent(eventType: string, payloadJson: string): Pick<BotMediaTarget, "targetType" | "targetOpenid"> | null {
+  let payload: Record<string, unknown>;
+  try { payload = JSON.parse(payloadJson) as Record<string, unknown>; }
+  catch { return null; }
+  const data = payload.d && typeof payload.d === "object" ? payload.d as Record<string, unknown> : payload;
+  const author = data.author && typeof data.author === "object" ? data.author as Record<string, unknown> : {};
+  const targetType = replyEventTypes.group.has(eventType) ? "group" : "c2c";
+  const value = targetType === "group" ? data.group_openid : author.user_openid || data.user_openid;
+  return typeof value === "string" && value.trim() ? { targetType, targetOpenid: value.trim() } : null;
+}
+
+export function listBotMediaTargets(user: SessionUser, botId: string): BotMediaTarget[] {
+  getBotRow(user, botId);
+  const rows = getDatabase().prepare(`
+    SELECT event_type, payload_json, received_at
+    FROM event_logs
+    WHERE bot_id = ?
+      AND event_type IN ('C2C_MESSAGE_CREATE', 'GROUP_AT_MESSAGE_CREATE', 'GROUP_MESSAGE_CREATE')
+    ORDER BY received_at DESC
+    LIMIT 1000
+  `).all(botId) as Array<{ event_type: string; payload_json: string; received_at: string }>;
+  const targets = new Map<string, BotMediaTarget>();
+
+  for (const row of rows) {
+    const target = mediaTargetFromEvent(row.event_type, row.payload_json);
+    if (!target) continue;
+    const key = `${target.targetType}:${target.targetOpenid}`;
+    if (!targets.has(key)) targets.set(key, { ...target, lastSeenAt: row.received_at });
+  }
+
+  return [...targets.values()];
+}
+
+export function identifyBotTargetType(user: SessionUser, botId: string, targetOpenid: string) {
+  return listBotMediaTargets(user, botId).find((target) => target.targetOpenid === targetOpenid)?.targetType || null;
+}
 
 export function getMessageReplyContext(user: SessionUser, botId: string, targetType: "c2c" | "group", targetOpenid: string) {
   getBotRow(user, botId);

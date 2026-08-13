@@ -1,12 +1,22 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { consumeEmailVerificationCode } from "@/lib/email-code-service";
 import { RateLimitError, assertTrustedRequest, consumeRateLimit, rateLimitKey } from "@/lib/security";
-import { authenticate, createSessionToken, deleteCurrentSession, deleteSessionsForUser, sessionCookieName, sessionMaxAgeSeconds } from "@/lib/session";
+import { authenticate, authenticateWithEmail, createSessionToken, deleteCurrentSession, deleteSessionsForUser, sessionCookieName, sessionMaxAgeSeconds } from "@/lib/session";
 
-const schema = z.object({
+const passwordSchema = z.object({
+  method: z.literal("password").optional(),
   email: z.email().max(160),
   password: z.string().min(1).max(128),
 });
+
+const codeSchema = z.object({
+  method: z.literal("email_code"),
+  email: z.email().max(160),
+  code: z.string().regex(/^\d{6}$/),
+});
+
+const schema = z.union([passwordSchema, codeSchema]);
 
 export async function POST(request: Request) {
   try {
@@ -26,10 +36,23 @@ export async function POST(request: Request) {
     throw error;
   }
 
-  const user = authenticate(parsed.data.email, parsed.data.password);
+  let user = null;
+  try {
+    user = parsed.data.method === "email_code"
+      ? (() => {
+        consumeEmailVerificationCode({ email: parsed.data.email, purpose: "login", code: parsed.data.code });
+        return authenticateWithEmail(parsed.data.email);
+      })()
+      : authenticate(parsed.data.email, parsed.data.password);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "";
+    if (code === "EMAIL_CODE_TOO_MANY_ATTEMPTS") return NextResponse.json({ message: "验证码尝试次数过多，请重新获取" }, { status: 429 });
+    if (code === "EMAIL_CODE_INVALID") return NextResponse.json({ message: "邮箱验证码不正确或已过期" }, { status: 401 });
+    throw error;
+  }
 
   if (!user) {
-    return NextResponse.json({ message: "邮箱或密码不正确" }, { status: 401 });
+    return NextResponse.json({ message: parsed.data.method === "email_code" ? "邮箱验证码不正确或已过期" : "邮箱或密码不正确" }, { status: 401 });
   }
 
   await deleteCurrentSession();

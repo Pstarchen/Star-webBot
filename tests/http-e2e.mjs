@@ -18,8 +18,44 @@ const userEmail = `user-${randomUUID()}@starbot.local`;
 const userPassword = randomBytes(24).toString("base64url");
 const encryptionKey = randomBytes(32).toString("base64");
 const port = await availablePort();
+const smtpPort = await availablePort();
 const baseUrl = `http://localhost:${port}`;
 const logs = [];
+const receivedEmails = [];
+const smtpServer = net.createServer((socket) => {
+  let dataMode = false;
+  let message = "";
+  socket.setEncoding("utf8");
+  socket.write("220 starbot-test-smtp\r\n");
+  socket.on("data", (chunk) => {
+    for (const line of chunk.split(/\r?\n/)) {
+      if (!line && !dataMode) continue;
+      if (dataMode) {
+        if (line === ".") {
+          receivedEmails.push(message);
+          message = "";
+          dataMode = false;
+          socket.write("250 queued\r\n");
+        } else {
+          message += `${line}\n`;
+        }
+        continue;
+      }
+      const command = line.toUpperCase();
+      if (command.startsWith("EHLO") || command.startsWith("HELO")) socket.write("250 starbot-test-smtp\r\n");
+      else if (command.startsWith("MAIL FROM")) socket.write("250 ok\r\n");
+      else if (command.startsWith("RCPT TO")) socket.write("250 ok\r\n");
+      else if (command === "DATA") {
+        dataMode = true;
+        socket.write("354 end with dot\r\n");
+      } else if (command === "QUIT") {
+        socket.write("221 bye\r\n");
+        socket.end();
+      } else socket.write("250 ok\r\n");
+    }
+  });
+});
+await new Promise((resolve, reject) => smtpServer.listen(smtpPort, "127.0.0.1", resolve).once("error", reject));
 
 const server = spawn(process.execPath, [path.join(projectRoot, "node_modules", "next", "dist", "bin", "next"), "start", "-p", String(port)], {
   cwd: projectRoot,
@@ -32,6 +68,10 @@ const server = spawn(process.execPath, [path.join(projectRoot, "node_modules", "
     CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
     ALLOW_PRIVATE_WEBHOOKS: "false",
     ALLOW_INSECURE_WEBHOOKS: "false",
+    SMTP_HOST: "127.0.0.1",
+    SMTP_PORT: String(smtpPort),
+    SMTP_FROM: "StarBot <noreply@starbot.local>",
+    SMTP_STARTTLS: "false",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -48,6 +88,7 @@ try {
   throw error;
 } finally {
   await stopServer();
+  await new Promise((resolve) => smtpServer.close(resolve));
   const resolvedTemporaryDirectory = path.resolve(temporaryDirectory);
   const resolvedSystemTemporaryDirectory = path.resolve(os.tmpdir()) + path.sep;
   if (resolvedTemporaryDirectory.startsWith(resolvedSystemTemporaryDirectory) && path.basename(resolvedTemporaryDirectory).startsWith("starbot-http-e2e-")) {
@@ -119,6 +160,16 @@ function sessionCookie(response) {
   return value.split(";", 1)[0];
 }
 
+async function latestVerificationCode(email) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const message = [...receivedEmails].reverse().find((value) => value.includes(email));
+    const match = message?.match(/验证码是：(\d{6})/);
+    if (match) return match[1];
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Verification code email was not received for ${email}`);
+}
+
 function encryptSecret(value) {
   const key = Buffer.from(encryptionKey, "base64");
   const initializationVector = randomBytes(12);
@@ -147,6 +198,10 @@ async function runAssertions() {
   assert.equal(anonymousMedia.status, 401);
   results.push("anonymous media upload is rejected");
 
+  const anonymousMediaTargets = await fetch(`${baseUrl}/api/bots/missing/media-targets`);
+  assert.equal(anonymousMediaTargets.status, 401);
+  results.push("anonymous media target access is rejected");
+
   const anonymousMultipart = await fetch(`${baseUrl}/api/bots/missing/multipart?path=%2Fv2%2Fusers%2Fdemo%2Ffiles`, { method: "POST" });
   assert.equal(anonymousMultipart.status, 401);
   results.push("anonymous bot multipart is rejected");
@@ -155,10 +210,17 @@ async function runAssertions() {
   assert.equal(anonymousPluginCenter.status, 401);
   results.push("anonymous plugin center access is rejected");
 
+  const registerCodeRequest = await jsonResponse("/api/auth/email-code", {
+    method: "POST",
+    headers: originHeaders,
+    body: JSON.stringify({ email: userEmail, purpose: "register" }),
+  });
+  assert.equal(registerCodeRequest.response.status, 200);
+  const registerCode = await latestVerificationCode(userEmail);
   const registered = await jsonResponse("/api/auth/register", {
     method: "POST",
     headers: originHeaders,
-    body: JSON.stringify({ name: "E2E Developer", email: userEmail, password: userPassword }),
+    body: JSON.stringify({ name: "E2E Developer", email: userEmail, password: userPassword, code: registerCode }),
   });
   assert.equal(registered.response.status, 201);
   assert.equal(registered.body.user.membershipPlan, "free");
@@ -167,10 +229,10 @@ async function runAssertions() {
   let userCookie = sessionCookie(registered.response);
   results.push("email registration creates a free membership session");
 
-  const duplicateRegistration = await jsonResponse("/api/auth/register", {
+  const duplicateRegistration = await jsonResponse("/api/auth/email-code", {
     method: "POST",
     headers: originHeaders,
-    body: JSON.stringify({ name: "Duplicate Developer", email: userEmail, password: userPassword }),
+    body: JSON.stringify({ email: userEmail, purpose: "register" }),
   });
   assert.equal(duplicateRegistration.response.status, 409);
   const wrongPassword = await jsonResponse("/api/auth/login", {
@@ -182,7 +244,7 @@ async function runAssertions() {
   results.push("duplicate registration and invalid credentials are rejected");
 
   for (const [requestPath, init] of [
-    ["/api/auth/register", { method: "POST", headers: crossOriginHeaders, body: JSON.stringify({ name: "Cross Origin", email: `csrf-${randomUUID()}@starbot.local`, password: userPassword }) }],
+    ["/api/auth/register", { method: "POST", headers: crossOriginHeaders, body: JSON.stringify({ name: "Cross Origin", email: `csrf-${randomUUID()}@starbot.local`, password: userPassword, code: "000000" }) }],
     ["/api/auth/login", { method: "POST", headers: crossOriginHeaders, body: JSON.stringify({ email: userEmail, password: userPassword }) }],
     ["/api/auth/logout", { method: "POST", headers: { Origin: "https://attacker.example", Cookie: userCookie } }],
   ]) {
@@ -437,6 +499,11 @@ async function runAssertions() {
     INSERT INTO bots (id, user_id, name, app_id, client_secret_cipher, environment, connection_mode, intents, status, auto_connect, created_at, updated_at)
     VALUES (?, ?, 'E2E QQ Bot', ?, ?, 'sandbox', 'webhook', 33554432, 'offline', 0, ?, ?)
   `).run(botId, userId, appId, encryptedSecret, now, now);
+  const mediaTargetOpenid = "e2e-group-openid";
+  database.prepare(`
+    INSERT INTO event_logs (id, bot_id, event_type, scene, status, latency_ms, content, payload_json, trace_id, received_at)
+    VALUES (?, ?, 'GROUP_AT_MESSAGE_CREATE', '群聊', 'success', 0, '', ?, NULL, ?)
+  `).run(randomUUID(), botId, JSON.stringify({ d: { id: "e2e-group-message", group_openid: mediaTargetOpenid } }), now);
   database.close();
   const callbackToken = createHash("sha256").update(botId).update("\0").update(encryptedSecret).digest("base64url");
 
@@ -458,6 +525,11 @@ async function runAssertions() {
   assert.equal(serializedBot.includes(clientSecret), false);
   assert.equal(serializedBot.includes(encryptedSecret), false);
   results.push("bot API returns shard and protected webhook fields");
+
+  const mediaTargets = await jsonResponse(`/api/bots/${botId}/media-targets`, { headers: { Cookie: userCookie } });
+  assert.equal(mediaTargets.response.status, 200);
+  assert.deepEqual(mediaTargets.body.targets, [{ targetType: "group", targetOpenid: mediaTargetOpenid, lastSeenAt: now }]);
+  results.push("media targets come from the selected bot's received events");
 
   const initialPluginCenter = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
   assert.equal(initialPluginCenter.response.status, 200);
@@ -547,6 +619,54 @@ async function runAssertions() {
   const publishedCenter = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
   assert.ok(publishedCenter.body.marketplace.some((item) => item.id === hostedProjectId && item.featured));
   results.push("only administrators can approve plugin marketplace publication");
+
+  const userMarketplaceEditDenied = await jsonResponse(`/api/plugin-marketplace/${hostedProjectId}`, {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ name: "Unauthorized marketplace edit" }),
+  });
+  assert.equal(userMarketplaceEditDenied.response.status, 403);
+  const crossOriginMarketplaceEdit = await jsonResponse(`/api/plugin-marketplace/${hostedProjectId}`, {
+    method: "PATCH",
+    headers: { Origin: "https://attacker.example", Cookie: adminCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Cross-origin marketplace edit" }),
+  });
+  assert.equal(crossOriginMarketplaceEdit.response.status, 403);
+  const editedMarketplace = await jsonResponse(`/api/plugin-marketplace/${hostedProjectId}`, {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({
+      name: "E2E 管理员维护插件",
+      description: "验证管理员编辑后的市场展示信息可以持久化。",
+      author: "E2E Admin",
+      category: "运营工具",
+      tags: ["管理员", "E2E"],
+      featured: false,
+      priceCents: 2500,
+    }),
+  });
+  assert.equal(editedMarketplace.response.status, 200);
+  const centerAfterMarketplaceEdit = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
+  const editedMarketplaceItem = centerAfterMarketplaceEdit.body.marketplace.find((item) => item.id === hostedProjectId);
+  assert.deepEqual({
+    name: editedMarketplaceItem.name,
+    description: editedMarketplaceItem.description,
+    author: editedMarketplaceItem.author,
+    category: editedMarketplaceItem.category,
+    tags: editedMarketplaceItem.tags,
+    featured: editedMarketplaceItem.featured,
+    priceCents: editedMarketplaceItem.priceCents,
+  }, {
+    name: "E2E 管理员维护插件",
+    description: "验证管理员编辑后的市场展示信息可以持久化。",
+    author: "E2E Admin",
+    category: "运营工具",
+    tags: ["管理员", "E2E"],
+    featured: false,
+    priceCents: 2500,
+  });
+  assert.deepEqual(editedMarketplaceItem.permissions, hostedManifest.permissions);
+  results.push("administrators can edit marketplace presentation without changing reviewed permissions");
 
   const sdkAppCreated = await jsonResponse("/api/plugins", {
     method: "POST",
@@ -674,6 +794,33 @@ async function runAssertions() {
   assert.equal(sdkAppsAfterDelete.body.plugins.some((item) => item.id === pluginId), false);
   results.push("SDK app deletion revokes access and releases the app slot");
 
+  const userMarketplaceDeleteDenied = await jsonResponse(`/api/plugin-marketplace/${hostedProjectId}`, {
+    method: "DELETE",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ reason: "Unauthorized removal" }),
+  });
+  assert.equal(userMarketplaceDeleteDenied.response.status, 403);
+  const removedMarketplace = await jsonResponse(`/api/plugin-marketplace/${hostedProjectId}`, {
+    method: "DELETE",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({ reason: "E2E 管理员下架验证" }),
+  });
+  assert.equal(removedMarketplace.response.status, 200);
+  assert.equal(removedMarketplace.body.disabledInstallations, 1);
+  const centerAfterMarketplaceRemoval = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
+  assert.equal(centerAfterMarketplaceRemoval.body.marketplace.some((item) => item.id === hostedProjectId), false);
+  const disabledHostedInstallation = centerAfterMarketplaceRemoval.body.installations.find((item) => item.id === installationId);
+  assert.equal(disabledHostedInstallation.enabled, false);
+  assert.equal(disabledHostedInstallation.projectStatus, "suspended");
+  assert.equal(centerAfterMarketplaceRemoval.body.projects.find((item) => item.id === hostedProjectId).status, "suspended");
+  const suspendedEnableDenied = await jsonResponse(`/api/plugin-installations/${installationId}`, {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(suspendedEnableDenied.response.status, 409);
+  results.push("administrator marketplace removal hides listings and disables active installations");
+
   const uninstalledHostedPlugin = await jsonResponse(`/api/plugin-installations/${installationId}`, {
     method: "DELETE",
     headers: { Origin: baseUrl, Cookie: userCookie },
@@ -707,6 +854,20 @@ async function runAssertions() {
   assert.equal(userLogin.body.user.membershipPlan, "pro");
   userCookie = sessionCookie(userLogin.response);
   assert.ok(userCookie.startsWith("starbot_session="));
+  const loginCodeRequest = await jsonResponse("/api/auth/email-code", {
+    method: "POST",
+    headers: originHeaders,
+    body: JSON.stringify({ email: userEmail, purpose: "login" }),
+  });
+  assert.equal(loginCodeRequest.response.status, 200);
+  const loginCode = await latestVerificationCode(userEmail);
+  const codeLogin = await jsonResponse("/api/auth/login", {
+    method: "POST",
+    headers: originHeaders,
+    body: JSON.stringify({ method: "email_code", email: userEmail, code: loginCode }),
+  });
+  assert.equal(codeLogin.response.status, 200);
+  assert.equal(codeLogin.body.user.id, userId);
   results.push("suspension invalidates sessions and reactivation works");
 
   return results;

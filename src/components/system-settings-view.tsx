@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Check, CreditCard, FileImage, Globe2, KeyRound, LoaderCircle, MessageCircle, ReceiptText, Save, Settings2, UploadCloud } from "lucide-react";
+import { Check, Copy, CreditCard, FileImage, Globe2, KeyRound, LoaderCircle, MessageCircle, ReceiptText, Save, Settings2, ShieldCheck, UploadCloud } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -105,6 +105,12 @@ export function SystemSettingsView({ onSiteChange }: { onSiteChange: (site: Site
     setSettings(body.settings); setSecret("");
   }
 
+  async function copyQQCallback() {
+    if (!settings?.qq.redirectUri) return;
+    await navigator.clipboard.writeText(settings.qq.redirectUri);
+    setSuccess("回调地址已复制");
+  }
+
   async function savePayment() {
     const current = settings;
     if (!current) return;
@@ -150,7 +156,73 @@ export function SystemSettingsView({ onSiteChange }: { onSiteChange: (site: Site
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="qq" className="outline-none"><Card className="max-w-3xl"><CardHeader className="border-b"><div className="flex items-start justify-between"><div><CardTitle>QQ 互联登录</CardTitle><CardDescription className="mt-2">配置 QQ 互联网站应用，不是机器人 AppID。</CardDescription></div><Switch checked={settings.qq.enabled} onCheckedChange={(enabled) => setSettings({ ...settings, qq: { ...settings.qq, enabled } })} aria-label="启用 QQ 登录" /></div></CardHeader><CardContent className="space-y-4 pt-5"><label><span className="field-label">QQ 互联 AppID</span><Input value={settings.qq.appId} onChange={(event) => setSettings({ ...settings, qq: { ...settings.qq, appId: event.target.value } })} /></label><label><span className="field-label">App Secret</span><Input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder={settings.qq.appSecretConfigured ? "已配置，留空保持不变" : "请输入 App Secret"} /></label><label><span className="field-label">回调地址</span><Input value={settings.qq.redirectUri} onChange={(event) => setSettings({ ...settings, qq: { ...settings.qq, redirectUri: event.target.value } })} placeholder="https://example.com/api/auth/qq/callback" /><span className="mt-1.5 block text-[11px] text-muted-foreground">需与 QQ 互联后台填写的回调地址完全一致。</span></label><Button onClick={() => void run("qq", saveQQ, "QQ 登录设置已保存")} disabled={busy === "qq"}><KeyRound size={14} />保存 QQ 登录设置</Button></CardContent></Card></Tabs.Content>
+        <Tabs.Content value="qq" className="outline-none">
+          <Card className="max-w-4xl overflow-hidden">
+            <CardHeader className="border-b px-5 py-5 sm:px-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTitle className="flex items-center gap-2"><MessageCircle size={15} />QQ 互联登录</CardTitle>
+                    <Badge variant={settings.qq.enabled ? "success" : "secondary"}>{settings.qq.enabled ? "已启用" : "未启用"}</Badge>
+                    <Badge variant={settings.qq.appSecretConfigured ? "outline" : "warning"}>{settings.qq.appSecretConfigured ? "密钥已托管" : "缺少密钥"}</Badge>
+                  </div>
+                  <CardDescription className="mt-2">这里配置的是 QQ 互联网站应用，用于用户登录与注册，不是 QQ 机器人 AppID。</CardDescription>
+                </div>
+                <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2 sm:justify-start">
+                  <span className="text-xs font-medium">开放 QQ 登录</span>
+                  <Switch checked={settings.qq.enabled} onCheckedChange={(enabled) => setSettings({ ...settings, qq: { ...settings.qq, enabled } })} aria-label="启用 QQ 登录" />
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <section className="grid gap-5 px-5 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="space-y-4">
+                  <label className="space-y-2">
+                    <span className="block text-xs font-medium">QQ 互联 AppID</span>
+                    <Input className="h-10 mono-data" value={settings.qq.appId} onChange={(event) => setSettings({ ...settings, qq: { ...settings.qq, appId: event.target.value } })} placeholder="填写 QQ 互联网站应用 AppID" />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="block text-xs font-medium">App Secret</span>
+                    <Input className="h-10" type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder={settings.qq.appSecretConfigured ? "已配置，留空保持不变；输入新值将轮换" : "请输入 App Secret"} />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="block text-xs font-medium">授权回调地址</span>
+                    <div className="flex gap-2">
+                      <Input className="h-10 mono-data text-xs" value={settings.qq.redirectUri} onChange={(event) => setSettings({ ...settings, qq: { ...settings.qq, redirectUri: event.target.value } })} placeholder="https://example.com/api/auth/qq/callback" />
+                      <Button type="button" variant="outline" size="icon" className="h-10 w-10 shrink-0" disabled={!settings.qq.redirectUri} onClick={() => void copyQQCallback()} aria-label="复制回调地址"><Copy size={15} /></Button>
+                    </div>
+                    <span className="block text-[11px] leading-5 text-muted-foreground">需与 QQ 互联后台填写的回调地址完全一致；域名、协议和路径任一不同都会导致回调失败。</span>
+                  </label>
+                </div>
+                <div className="rounded-md border bg-muted/20 p-4">
+                  <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={15} />启用前检查</div>
+                  <div className="mt-4 space-y-3 text-xs">
+                    {[
+                      ["AppID", Boolean(settings.qq.appId)],
+                      ["App Secret", settings.qq.appSecretConfigured || Boolean(secret)],
+                      ["回调地址", Boolean(settings.qq.redirectUri)],
+                    ].map(([label, ready]) => (
+                      <div key={String(label)} className="flex items-center justify-between gap-3">
+                        <span className="text-muted-foreground">{String(label)}</span>
+                        <Badge variant={ready ? "success" : "warning"}>{ready ? "就绪" : "待配置"}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-5 rounded-md border bg-background px-3 py-3 text-[11px] leading-5 text-muted-foreground">
+                    密钥只会加密保存到服务端；配置读取接口不会回显原始 Secret。
+                  </div>
+                </div>
+              </section>
+              <div className="flex flex-col gap-3 border-t bg-muted/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <p className="text-xs leading-5 text-muted-foreground">保存后，登录页会根据启用状态展示或禁用 QQ 登录入口。</p>
+                <Button className="h-10 shrink-0 sm:min-w-40" onClick={() => void run("qq", saveQQ, "QQ 登录设置已保存")} disabled={busy === "qq"}>
+                  {busy === "qq" ? <LoaderCircle className="animate-spin" size={14} /> : <KeyRound size={14} />}
+                  {busy === "qq" ? "正在保存" : "保存 QQ 登录设置"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </Tabs.Content>
 
         <Tabs.Content value="payment" className="outline-none">
           <Card className="max-w-4xl overflow-hidden">

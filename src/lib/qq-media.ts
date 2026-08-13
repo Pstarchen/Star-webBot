@@ -86,6 +86,7 @@ export function describeQQMediaApiError(error: QQApiError, stage: QQMediaUploadS
     "850027": "QQ 文件处理超时，请稍后重试",
     "850031": "文件超过 QQ 允许的大小限制",
     "10000": "QQ 不支持当前富媒体操作或参数",
+    "11255": "目标 OpenID 无效、场景选择错误，或目标不属于当前机器人",
     "40093001": "QQ 富媒体上传通道异常，请稍后重试",
     "40093002": "已超过今日文件发送容量上限",
   };
@@ -98,10 +99,16 @@ export function describeQQMediaApiError(error: QQApiError, stage: QQMediaUploadS
   };
 }
 
+export function qqMediaApiHttpStatus(error: QQApiError) {
+  const code = qqErrorCode(error);
+  if (["850018", "850019", "850026", "850031", "10000", "11255", "40093002"].includes(code || "")) return 400;
+  return error.status >= 500 ? 502 : 400;
+}
+
 function isRetryableMediaError(error: unknown) {
   if (isQQApiError(error)) {
     const code = qqErrorCode(error);
-    if (["850018", "850019", "850026", "850031", "10000", "40093002"].includes(code || "")) return false;
+    if (["850018", "850019", "850026", "850031", "10000", "11255", "40093002"].includes(code || "")) return false;
     return ["850027", "40093001"].includes(code || "") || error.status === 408 || error.status === 429 || error.status >= 500;
   }
   if (!(error instanceof Error) || error.message === "MEDIA_PRESIGNED_URL_INVALID") return false;

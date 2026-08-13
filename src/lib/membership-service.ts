@@ -1,7 +1,7 @@
 import "server-only";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { getDatabase, writeAuditLog } from "@/lib/database";
-import { getPaymentConfig } from "@/lib/system-settings-service";
+import { getPaymentConfig, getPaymentPublicConfig } from "@/lib/system-settings-service";
 import type { BillingCycle, MembershipOrder, MembershipPlan, MembershipPlanId, PaymentChannel, SessionUser } from "@/types/platform";
 
 type MembershipPlanRow = {
@@ -184,7 +184,7 @@ export function membershipCenter(user: SessionUser) {
     FROM membership_orders JOIN membership_plans ON membership_plans.id = membership_orders.plan_id
     WHERE membership_orders.user_id = ? ORDER BY membership_orders.created_at DESC LIMIT 20
   `).all(user.id) as OrderRow[];
-  const payment = getPaymentConfig();
+  const payment = getPaymentPublicConfig();
   const current = membership?.status === "active"
     ? { plan: toPlan({ ...membership, id: membership.plan_id }), status: membership.status, startsAt: membership.starts_at, expiresAt: membership.expires_at }
     : membership

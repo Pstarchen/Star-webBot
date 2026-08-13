@@ -54,6 +54,15 @@ export function authenticate(email: string, password: string): SessionUser | nul
   return toSessionUser(user);
 }
 
+export function authenticateWithEmail(email: string): SessionUser | null {
+  const database = getDatabase();
+  const user = database.prepare(userWithMembershipSql + " WHERE users.email = ?").get(email.trim().toLowerCase()) as UserRow | undefined;
+  if (!user || user.status !== "active") return null;
+  database.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(new Date().toISOString(), user.id);
+  writeAuditLog(user.id, "auth.email.login", "user", user.id);
+  return toSessionUser(user);
+}
+
 export function registerUser(input: { name: string; email: string; password: string }) {
   const database = getDatabase();
   const id = randomUUID();

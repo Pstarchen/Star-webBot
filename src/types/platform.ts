@@ -97,6 +97,12 @@ export type EventLog = {
   traceId?: string | null;
 };
 
+export type BotMediaTarget = {
+  targetType: "c2c" | "group";
+  targetOpenid: string;
+  lastSeenAt: string;
+};
+
 export type Plugin = {
   id: string;
   name: string;
@@ -165,6 +171,7 @@ export type HostedPluginInstallation = {
   category: string;
   tags: string[];
   version: string;
+  projectStatus: "private" | "pending" | "published" | "rejected" | "suspended";
   enabled: boolean;
   priority: number;
   failureCount: number;

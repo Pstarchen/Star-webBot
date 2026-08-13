@@ -56,7 +56,7 @@ const viewMeta: Record<ViewKey, { label: string; description: string }> = {
   developer: { label: "开发者中心", description: "插件 SDK、QQ OpenAPI 调试与开发工具" },
   membership: { label: "会员与账单", description: "购买会员套餐、查看权益有效期和支付订单" },
   team: { label: "团队成员", description: "角色、协作与访问控制" },
-  admin: { label: "系统与配额", description: "用户机器人上限与安全策略" },
+  admin: { label: "用户设置", description: "用户会员、配额、角色与账号状态" },
   settings: { label: "系统设置", description: "站点品牌、QQ 登录、支付渠道与套餐定价" },
 };
 
@@ -143,7 +143,7 @@ function AddBotDialog({
           <div className="mt-5 flex items-center justify-between border-y bg-muted/40 px-3 py-3">
             <div>
               <div className="text-xs font-medium text-foreground">机器人配额</div>
-              <div className="mt-1 text-[11px] text-muted-foreground">管理员可在系统与配额中调整</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">管理员可在用户设置中调整</div>
             </div>
             <Badge variant={quotaReached ? "warning" : "outline"} className="mono-data">
               {used} / {quota}
@@ -360,7 +360,7 @@ export function PlatformShell({
     ];
     const adminNav: NavItem[] = [
       { key: "team", label: "团队成员", icon: Users },
-      { key: "admin", label: "系统与配额", icon: ShieldCheck },
+      { key: "admin", label: "用户设置", icon: ShieldCheck },
       { key: "settings", label: "系统设置", icon: Settings2 },
     ];
 

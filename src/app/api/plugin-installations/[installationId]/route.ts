@@ -24,6 +24,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ insta
   } catch (error) {
     const code = error instanceof Error ? error.message : "";
     if (code.startsWith("PLUGIN_CONFIG")) return NextResponse.json({ message: "插件配置校验失败", code }, { status: 400 });
+    if (code === "PLUGIN_PROJECT_SUSPENDED") return NextResponse.json({ message: "该插件已被管理员从市场下架，不能重新启用", code }, { status: 409 });
     return NextResponse.json({ message: "插件安装记录或版本不存在" }, { status: 404 });
   }
 }
@@ -36,4 +37,3 @@ export async function DELETE(request: Request, context: { params: Promise<{ inst
   try { uninstallPlugin(user, (await context.params).installationId); return NextResponse.json({ ok: true }); }
   catch { return NextResponse.json({ message: "插件安装记录不存在或无权操作" }, { status: 404 }); }
 }
-

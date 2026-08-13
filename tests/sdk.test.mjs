@@ -55,7 +55,7 @@ describe("Node SDK", () => {
   });
 
   it("publishes the complete current generated OpenAPI catalog", () => {
-    expect(Object.keys(QQ_OPENAPI_ENDPOINTS)).toHaveLength(34);
+    expect(Object.keys(QQ_OPENAPI_ENDPOINTS)).toHaveLength(42);
     expect(APP_QQ_OPENAPI_ENDPOINTS).toEqual(QQ_OPENAPI_ENDPOINTS);
     expect(resolveQQOpenApiEndpoint("recallGroupMessage", { group_openid: "group/id", message_id: "message/id" })).toEqual({
       method: "DELETE",
@@ -64,6 +64,11 @@ describe("Node SDK", () => {
     });
     expect(() => resolveQQOpenApiEndpoint("getGroupInfo", {})).toThrow("QQ_API_PATH_PARAM_REQUIRED:group_openid");
     expect(() => resolveQQOpenApiEndpoint("getBotProfile", { unused: "value" })).toThrow("QQ_API_PATH_PARAM_UNKNOWN:unused");
+    expect(resolveQQOpenApiEndpoint("updateCommandPanelTarget", { panel_id: "panel/id" })).toEqual({
+      method: "PUT",
+      path: "/v2/panels/panel%2Fid/target",
+      title: "修改指令面板关联对象",
+    });
   });
 
   it("surfaces authentication failures as typed errors", async () => {

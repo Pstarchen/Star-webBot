@@ -200,6 +200,11 @@ function migrate(database: Database.Database) {
       version_id TEXT NOT NULL REFERENCES plugin_versions(id),
       featured INTEGER NOT NULL DEFAULT 0,
       price_cents INTEGER NOT NULL DEFAULT 0 CHECK(price_cents >= 0),
+      display_name TEXT,
+      display_description TEXT,
+      display_author TEXT,
+      display_category TEXT,
+      display_tags_json TEXT,
       published_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       published_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -316,6 +321,21 @@ function migrate(database: Database.Database) {
       expires_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS email_verification_codes (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK(purpose IN ('login', 'register')),
+      code_hash TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL,
+      sent_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS email_verification_codes_lookup_idx
+      ON email_verification_codes(email, purpose, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS oauth_accounts (
       provider TEXT NOT NULL,
       provider_account_id TEXT NOT NULL,
@@ -394,6 +414,13 @@ function migrate(database: Database.Database) {
   const deliveryColumns = database.prepare("PRAGMA table_info(plugin_deliveries)").all() as Array<{ name: string }>;
   if (!deliveryColumns.some((column) => column.name === "lease_owner")) database.exec("ALTER TABLE plugin_deliveries ADD COLUMN lease_owner TEXT");
   if (!deliveryColumns.some((column) => column.name === "lease_expires_at")) database.exec("ALTER TABLE plugin_deliveries ADD COLUMN lease_expires_at INTEGER");
+
+  const marketplaceColumns = database.prepare("PRAGMA table_info(plugin_market_listings)").all() as Array<{ name: string }>;
+  if (!marketplaceColumns.some((column) => column.name === "display_name")) database.exec("ALTER TABLE plugin_market_listings ADD COLUMN display_name TEXT");
+  if (!marketplaceColumns.some((column) => column.name === "display_description")) database.exec("ALTER TABLE plugin_market_listings ADD COLUMN display_description TEXT");
+  if (!marketplaceColumns.some((column) => column.name === "display_author")) database.exec("ALTER TABLE plugin_market_listings ADD COLUMN display_author TEXT");
+  if (!marketplaceColumns.some((column) => column.name === "display_category")) database.exec("ALTER TABLE plugin_market_listings ADD COLUMN display_category TEXT");
+  if (!marketplaceColumns.some((column) => column.name === "display_tags_json")) database.exec("ALTER TABLE plugin_market_listings ADD COLUMN display_tags_json TEXT");
 
   const pluginColumns = database.prepare("PRAGMA table_info(plugins)").all() as Array<{ name: string }>;
   if (!pluginColumns.some((column) => column.name === "signing_secret_cipher")) {
@@ -609,8 +636,9 @@ function seedOfficialPlugins(database: Database.Database) {
     database.prepare(`
       INSERT OR IGNORE INTO plugin_market_listings
         (project_id, version_id, featured, price_cents, published_by, published_at, updated_at)
-      VALUES (?, ?, 1, 0, ?, ?, ?)
-    `).run(projectId, versionId, owner.id, now, now);
+      SELECT ?, ?, 1, 0, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM plugin_projects WHERE id = ? AND status = 'published')
+    `).run(projectId, versionId, owner.id, now, now, projectId);
   })();
 }
 

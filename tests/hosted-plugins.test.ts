@@ -342,8 +342,53 @@ describe("hosted plugin lifecycle", () => {
     expect(admin).not.toBeNull();
     serviceModule.reviewPlugin(admin!, review.reviewId, { approved: true, featured: true });
     const center = serviceModule.listPluginCenter(user);
-    expect(center.installations[0]).toMatchObject({ id: installed.installationId, enabled: true, priority: 20, config: { step: 3 } });
+    expect(center.installations[0]).toMatchObject({ id: installed.installationId, projectStatus: "published", enabled: true, priority: 20, config: { step: 3 } });
     expect(center.marketplace.find((plugin) => plugin.id === imported.projectId)).toMatchObject({ featured: true, owned: true });
+
+    expect(() => serviceModule.updateMarketplacePlugin(user, imported.projectId, { name: "越权修改" })).toThrow("ADMIN_REQUIRED");
+    expect(() => serviceModule.updateMarketplacePlugin(admin!, imported.projectId, { priceCents: -1 })).toThrow("PLUGIN_MARKETPLACE_PRICE_INVALID");
+    serviceModule.updateMarketplacePlugin(admin!, imported.projectId, {
+      name: "市场计数器",
+      description: "由管理员维护的市场展示说明。",
+      author: "StarBot 审核团队",
+      category: "效率工具",
+      tags: ["精选", "计数"],
+      featured: false,
+      priceCents: 1299,
+    });
+    const updatedMarketplace = serviceModule.listPluginCenter(user).marketplace.find((plugin) => plugin.id === imported.projectId);
+    expect(updatedMarketplace).toMatchObject({
+      name: "市场计数器",
+      description: "由管理员维护的市场展示说明。",
+      author: "StarBot 审核团队",
+      category: "效率工具",
+      tags: ["精选", "计数"],
+      featured: false,
+      priceCents: 1299,
+      events: ["C2C_MESSAGE_CREATE"],
+      permissions: ["storage:kv", "log:write"],
+    });
+
+    const nextVersion = await serviceModule.importPluginPackage(user, pluginPackage({ version: "1.1.0" }));
+    serviceModule.requestPluginReview(user, imported.projectId, nextVersion.versionId);
+    const removed = serviceModule.removeMarketplacePlugin(admin!, imported.projectId, "安全复核下架");
+    expect(removed).toEqual({ disabledInstallations: 1, cancelledReviews: 1 });
+    expect(serviceModule.listPluginCenter(user).marketplace.some((plugin) => plugin.id === imported.projectId)).toBe(false);
+    expect(databaseModule.getDatabase().prepare("SELECT status, review_note FROM plugin_projects WHERE id = ?").get(imported.projectId))
+      .toEqual({ status: "suspended", review_note: "安全复核下架" });
+    expect(databaseModule.getDatabase().prepare("SELECT enabled FROM plugin_installations WHERE id = ?").get(installed.installationId)).toEqual({ enabled: 0 });
+    expect(serviceModule.listPluginCenter(user).installations.find((installation) => installation.id === installed.installationId)).toMatchObject({ projectStatus: "suspended", enabled: false });
+    expect(databaseModule.getDatabase().prepare("SELECT status, review_note FROM plugin_market_reviews WHERE project_id = ? ORDER BY requested_at DESC LIMIT 1").get(imported.projectId))
+      .toEqual({ status: "rejected", review_note: "安全复核下架" });
+    await expect(serviceModule.dispatchHostedPlugins(botId, "C2C_MESSAGE_CREATE", { id: "hosted-event-after-removal" }))
+      .resolves.toEqual({ executed: 0, stopped: false });
+    expect(() => serviceModule.updatePluginInstallation(user, installed.installationId, { enabled: true })).toThrow("PLUGIN_PROJECT_SUSPENDED");
+    expect(() => serviceModule.requestPluginReview(user, imported.projectId, nextVersion.versionId)).toThrow("PLUGIN_PROJECT_SUSPENDED");
+    const auditActions = databaseModule.getDatabase().prepare("SELECT action FROM audit_logs WHERE target_id = ? ORDER BY created_at DESC").all(imported.projectId) as Array<{ action: string }>;
+    expect(auditActions.map((row) => row.action)).toEqual(expect.arrayContaining([
+      "hosted_plugin.marketplace.update",
+      "hosted_plugin.marketplace.remove",
+    ]));
   });
 
   it("records permission violations and automatically disables repeated failures", async () => {
@@ -385,5 +430,21 @@ describe("hosted plugin lifecycle", () => {
       .resolves.toEqual({ executed: 1, stopped: false });
     expect(databaseModule.getDatabase().prepare("SELECT value_json FROM plugin_kv WHERE installation_id = ? AND key = 'lastEvent'").get(installed.installationId))
       .toEqual({ value_json: '"INTERACTION_CREATE"' });
+  });
+
+  it("keeps an official marketplace deletion after database restart", () => {
+    const admin = sessionModule.authenticate("hosted-admin@test.local", "hosted-admin-password");
+    expect(admin).not.toBeNull();
+    const officialProjectId = "starbot-official-keyword-reply";
+    expect(serviceModule.listPluginCenter(admin!).marketplace.some((plugin) => plugin.id === officialProjectId)).toBe(true);
+    serviceModule.removeMarketplacePlugin(admin!, officialProjectId, "官方插件维护下架");
+
+    const state = globalThis as typeof globalThis & { __starbotDatabase?: { close(): void } };
+    state.__starbotDatabase?.close();
+    delete state.__starbotDatabase;
+    databaseModule.getDatabase();
+
+    expect(serviceModule.listPluginCenter(admin!).marketplace.some((plugin) => plugin.id === officialProjectId)).toBe(false);
+    expect(databaseModule.getDatabase().prepare("SELECT status FROM plugin_projects WHERE id = ?").get(officialProjectId)).toEqual({ status: "suspended" });
   });
 });

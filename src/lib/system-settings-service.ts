@@ -120,6 +120,15 @@ export function getPaymentConfig() {
   };
 }
 
+export function getPaymentPublicConfig() {
+  const row = settingsRow();
+  return {
+    enabled: Boolean(row.payment_enabled),
+    provider: row.payment_provider,
+    manualInstructions: row.manual_payment_instructions,
+  };
+}
+
 export function setSiteAsset(actor: SessionUser, kind: "logo" | "favicon", mimeType: string, bytes: Uint8Array) {
   if (actor.role !== "admin") throw new Error("ADMIN_REQUIRED");
   const columnPrefix = kind === "logo" ? "site_logo" : "site_favicon";

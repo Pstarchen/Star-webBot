@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ArrowRight, Eye, EyeOff, LockKeyhole, MessageCircle } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, KeyRound, LockKeyhole, Mail, MessageCircle } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,12 +12,25 @@ import type { SitePublicSettings } from "@/types/platform";
 
 export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLoginEnabled: boolean; site: SitePublicSettings; initialError?: string }) {
   const [mode, setMode] = useState<"login" | "register">("login");
+  const [loginMethod, setLoginMethod] = useState<"password" | "email_code">("password");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [sendingCode, setSendingCode] = useState(false);
+  const [codeCooldown, setCodeCooldown] = useState(0);
   const [error, setError] = useState(initialError);
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    if (!codeCooldown) return;
+    const timer = window.setInterval(() => setCodeCooldown((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearInterval(timer);
+  }, [codeCooldown]);
+
+  const usesEmailCode = mode === "register" || loginMethod === "email_code";
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -25,10 +38,15 @@ export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLogin
     setError("");
 
     try {
+      const payload = mode === "login"
+        ? loginMethod === "email_code"
+          ? { method: "email_code", email, code }
+          : { method: "password", email, password }
+        : { name, email, password, code };
       const response = await fetch(mode === "login" ? "/api/auth/login" : "/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify(payload),
       });
       const body = await response.json().catch(() => ({})) as { message?: string };
       if (!response.ok) {
@@ -45,6 +63,30 @@ export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLogin
   function changeMode(value: string) {
     setMode(value as "login" | "register");
     setError("");
+    setNotice("");
+    setCode("");
+  }
+
+  async function sendCode() {
+    if (!email.trim() || codeCooldown || sendingCode) return;
+    setSendingCode(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/auth/email-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, purpose: mode }),
+      });
+      const body = await response.json().catch(() => ({})) as { message?: string; cooldownSeconds?: number };
+      if (!response.ok) throw new Error(body.message || "验证码发送失败");
+      setCodeCooldown(body.cooldownSeconds || 60);
+      setNotice("验证码已发送，请查看邮箱。");
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "验证码发送失败");
+    } finally {
+      setSendingCode(false);
+    }
   }
 
   return (
@@ -78,6 +120,25 @@ export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLogin
               </Tabs.List>
             </Tabs.Root>
 
+            {mode === "login" && (
+              <div className="mt-5 grid grid-cols-2 gap-2 rounded-md border bg-muted/20 p-1">
+                <button
+                  type="button"
+                  onClick={() => { setLoginMethod("password"); setError(""); setNotice(""); }}
+                  className={loginMethod === "password" ? "flex h-8 items-center justify-center gap-2 rounded-sm bg-card text-xs font-medium shadow-sm" : "flex h-8 items-center justify-center gap-2 rounded-sm text-xs font-medium text-muted-foreground hover:bg-accent"}
+                >
+                  <LockKeyhole size={13} />密码
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setLoginMethod("email_code"); setError(""); setNotice(""); }}
+                  className={loginMethod === "email_code" ? "flex h-8 items-center justify-center gap-2 rounded-sm bg-card text-xs font-medium shadow-sm" : "flex h-8 items-center justify-center gap-2 rounded-sm text-xs font-medium text-muted-foreground hover:bg-accent"}
+                >
+                  <Mail size={13} />邮箱验证码
+                </button>
+              </div>
+            )}
+
             <form onSubmit={submit} className="mt-6 space-y-4">
               {mode === "register" && (
                 <label className="block">
@@ -89,36 +150,62 @@ export function LoginForm({ qqLoginEnabled, site, initialError = "" }: { qqLogin
                 <span className="field-label">邮箱地址</span>
                 <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="name@example.com" required />
               </label>
-              <label className="block">
-                <span className="field-label">密码</span>
-                <div className="relative">
-                  <Input
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    autoComplete={mode === "login" ? "current-password" : "new-password"}
-                    minLength={8}
-                    className="pr-10"
-                    placeholder="至少 8 位"
-                    required
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setShowPassword((value) => !value)}
-                    className="absolute right-0 top-0 h-9 w-9 text-muted-foreground"
-                    aria-label={showPassword ? "隐藏密码" : "显示密码"}
-                  >
-                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </Button>
-                </div>
-              </label>
+              {!usesEmailCode || mode === "register" ? (
+                <label className="block">
+                  <span className="field-label">密码</span>
+                  <div className="relative">
+                    <Input
+                      type={showPassword ? "text" : "password"}
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      autoComplete={mode === "login" ? "current-password" : "new-password"}
+                      minLength={8}
+                      className="pr-10"
+                      placeholder="至少 8 位"
+                      required
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setShowPassword((value) => !value)}
+                      className="absolute right-0 top-0 h-9 w-9 text-muted-foreground"
+                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                    >
+                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </Button>
+                  </div>
+                </label>
+              ) : null}
 
+              {usesEmailCode && (
+                <label className="block">
+                  <span className="field-label">邮箱验证码</span>
+                  <div className="flex gap-2">
+                    <Input
+                      inputMode="numeric"
+                      pattern="[0-9]{6}"
+                      maxLength={6}
+                      value={code}
+                      onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                      autoComplete="one-time-code"
+                      className="mono-data"
+                      placeholder="6 位数字"
+                      required
+                    />
+                    <Button type="button" variant="outline" className="h-9 shrink-0 px-3 text-xs" disabled={!email.trim() || sendingCode || codeCooldown > 0} onClick={() => void sendCode()}>
+                      <KeyRound size={14} />
+                      {codeCooldown ? `${codeCooldown}s` : sendingCode ? "发送中" : "发送验证码"}
+                    </Button>
+                  </div>
+                </label>
+              )}
+
+              {notice && <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700">{notice}</div>}
               {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">{error}</div>}
 
               <Button type="submit" className="h-10 w-full" disabled={loading}>
-                {loading ? "正在处理..." : mode === "login" ? "进入控制台" : "注册并进入"}
+                {loading ? "正在处理..." : mode === "login" ? "进入控制台" : "验证邮箱并注册"}
                 {!loading && <ArrowRight size={16} />}
               </Button>
             </form>
