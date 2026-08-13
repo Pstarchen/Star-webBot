@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "npm run build && node tests/http-e2e.mjs",
+    "audit:qq-api": "node scripts/audit-qq-openapi.mjs",
     "keygen": "node scripts/generate-key.mjs"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getBotClient } from "@/lib/bot-service";
-import { QQApiError, validateQQApiPath } from "@/lib/qq-api";
+import { isQQApiError, validateQQApiPath } from "@/lib/qq-api";
 import { getSession } from "@/lib/session";
 import { assertTrustedRequest } from "@/lib/security";
 
@@ -30,7 +30,7 @@ export async function POST(request: Request, context: { params: Promise<{ botId:
     const client = getBotClient(user, (await context.params).botId);
     return NextResponse.json(await client.request(path, parsed.data.method, parsed.data.body));
   } catch (error) {
-    if (error instanceof QQApiError) {
+    if (isQQApiError(error)) {
       return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: error.status >= 400 && error.status < 500 ? 400 : 502 });
     }
     if (error instanceof Error && error.message === "BOT_NOT_FOUND") return NextResponse.json({ message: "机器人不存在" }, { status: 404 });

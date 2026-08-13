@@ -47,7 +47,7 @@ export const hostedPluginManifestSchema = z.object({
   category: z.string().trim().min(2).max(30),
   tags: z.array(z.string().trim().min(1).max(20)).max(8).default([]),
   entry: z.string().trim().min(1).max(128),
-  events: z.array(z.string().regex(/^[A-Z0-9_]{2,80}$/)).min(1).max(30),
+  events: z.array(z.union([z.literal("*"), z.string().regex(/^[A-Z0-9_]{2,80}$/)])).min(1).max(30),
   permissions: z.array(z.enum([
     "reply:text",
     "reply:markdown",

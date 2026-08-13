@@ -1,10 +1,20 @@
 import "server-only";
+import { resolveQQOpenApiEndpoint, type QQOpenApiEndpointId, type QQOpenApiPathParams, type QQOpenApiQuery } from "@/lib/qq-openapi-catalog";
 import type { MessagePayload } from "@/types/platform";
 
 const QQ_API_BASE = "https://api.bot.qq.com";
 const TOKEN_REFRESH_BUFFER_MS = 60_000;
 
 export type QQBotCredentials = { appId: string; clientSecret: string };
+export type QQGroupMemberMuteOperation = "add" | "update";
+export type QQBotProfile = {
+  id: string;
+  username: string;
+  avatar?: string;
+  bot?: boolean;
+  share_url?: string;
+  welcome_msg?: string;
+};
 
 type AccessTokenResponse = { access_token: string; expires_in: number | string };
 export type QQGatewayInfo = {
@@ -28,17 +38,31 @@ export class QQApiError extends Error {
   }
 }
 
+export function isQQApiError(error: unknown): error is QQApiError {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as Partial<QQApiError>;
+  return candidate.name === "QQApiError"
+    && typeof candidate.message === "string"
+    && typeof candidate.status === "number"
+    && Number.isInteger(candidate.status)
+    && candidate.status >= 100
+    && candidate.status <= 599
+    && (candidate.traceId === null || typeof candidate.traceId === "string")
+    && "responseBody" in candidate;
+}
+
 export class QQBotApiClient {
   private token?: CachedToken;
 
   constructor(private readonly credentials: QQBotCredentials) {}
 
-  async getAccessToken() {
+  async getAccessToken(signal?: AbortSignal) {
     if (this.token && this.token.expiresAt - TOKEN_REFRESH_BUFFER_MS > Date.now()) return this.token.value;
     const response = await fetch(`${QQ_API_BASE}/app/getAppAccessToken`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(this.credentials),
+      signal,
       cache: "no-store",
     });
     const body = await response.json().catch(() => null) as AccessTokenResponse | Record<string, unknown> | null;
@@ -56,6 +80,10 @@ export class QQBotApiClient {
     return this.request<QQGatewayInfo>("/gateway/bot", "GET");
   }
 
+  async getBotProfile() {
+    return this.request<QQBotProfile>("/users/@me", "GET");
+  }
+
   async sendC2CMessage(userOpenid: string, payload: MessagePayload) {
     return this.request(`/v2/users/${encodeURIComponent(userOpenid)}/messages`, "POST", payload);
   }
@@ -64,16 +92,46 @@ export class QQBotApiClient {
     return this.request(`/v2/groups/${encodeURIComponent(groupOpenid)}/messages`, "POST", payload);
   }
 
-  async request<T = unknown>(path: string, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", payload?: unknown) {
+  async recallC2CMessage(userOpenid: string, messageId: string) {
+    return this.request(`/v2/users/${encodeURIComponent(userOpenid)}/messages/${encodeURIComponent(messageId)}`, "DELETE");
+  }
+
+  async recallGroupMessage(groupOpenid: string, messageId: string) {
+    return this.request(`/v2/groups/${encodeURIComponent(groupOpenid)}/messages/${encodeURIComponent(messageId)}`, "DELETE");
+  }
+
+  async getGroupMuteSettings(groupOpenid: string) {
+    return this.request(`/v2/groups/${encodeURIComponent(groupOpenid)}/restrict_chat_setting`, "GET");
+  }
+
+  async muteGroupMember(groupOpenid: string, memberOpenid: string, muteExpireAt: string, operation: QQGroupMemberMuteOperation = "add") {
+    return this.request(`/v2/groups/${encodeURIComponent(groupOpenid)}/restrict_chat_setting`, "POST", {
+      members: [{ op: operation, member_openid: memberOpenid, mute_expire_at: muteExpireAt }],
+    });
+  }
+
+  async unmuteGroupMember(groupOpenid: string, memberOpenid: string) {
+    return this.request(`/v2/groups/${encodeURIComponent(groupOpenid)}/restrict_chat_setting`, "POST", {
+      members: [{ op: "del", member_openid: memberOpenid, mute_expire_at: "" }],
+    });
+  }
+
+  async request<T = unknown>(path: string, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", payload?: unknown, signal?: AbortSignal) {
     const normalizedPath = validateQQApiPath(path);
-    const accessToken = await this.getAccessToken();
+    const accessToken = await this.getAccessToken(signal);
     const response = await fetch(`${QQ_API_BASE}${normalizedPath}`, {
       method,
       headers: { Authorization: `QQBot ${accessToken}`, "Content-Type": "application/json" },
       body: payload === undefined ? undefined : JSON.stringify(payload),
+      signal,
       cache: "no-store",
     });
     return parseQQApiResponse<T>(response);
+  }
+
+  async callEndpoint<T = unknown>(endpointId: QQOpenApiEndpointId, pathParams: QQOpenApiPathParams = {}, payload?: unknown, query: QQOpenApiQuery = {}, signal?: AbortSignal) {
+    const endpoint = resolveQQOpenApiEndpoint(endpointId, pathParams, query);
+    return this.request<T>(endpoint.path, endpoint.method, payload, signal);
   }
 
   async requestRaw<T = unknown>(path: string, method: "POST" | "PUT" | "PATCH", body: BodyInit, contentType: string, signal?: AbortSignal) {

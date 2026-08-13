@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getBotRow } from "@/lib/bot-service";
 import { gatewayManager } from "@/lib/gateway-manager";
-import { QQApiError } from "@/lib/qq-api";
+import { isQQApiError } from "@/lib/qq-api";
 import { getSession } from "@/lib/session";
 import { assertTrustedRequest } from "@/lib/security";
 
@@ -25,7 +25,7 @@ export async function POST(request: Request, context: { params: Promise<{ botId:
     return NextResponse.json(await gatewayManager.connect(botId));
   }
   catch (error) {
-    if (error instanceof QQApiError) return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: 400 });
+    if (isQQApiError(error)) return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: 400 });
     return NextResponse.json({ message: error instanceof Error ? error.message : "Gateway 连接失败" }, { status: 400 });
   }
 }

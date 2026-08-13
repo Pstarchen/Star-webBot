@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "group-member-moderation",
+  "name": "群成员禁言管理",
+  "version": "1.0.0",
+  "description": "允许群主或管理员通过群聊命令禁言、解禁被 @ 的普通群成员，并查询当前群禁言人数。",
+  "author": "StarBot Developer",
+  "category": "群聊管理",
+  "tags": ["群管理", "禁言", "管理员工具"],
+  "entry": "index.js",
+  "events": ["GROUP_AT_MESSAGE_CREATE"],
+  "permissions": ["reply:text", "qq:api", "log:write"],
+  "commands": [
+    { "name": "/禁言 @成员 [时长]", "description": "禁言一名普通成员，时长支持 s、m、h、d" },
+    { "name": "/解禁 @成员", "description": "立即解除一名普通成员的禁言" },
+    { "name": "/禁言状态", "description": "查询当前群被禁言的成员数量" }
+  ],
+  "configSchema": [
+    { "key": "muteCommand", "label": "禁言命令", "type": "text", "required": true, "default": "/禁言" },
+    { "key": "unmuteCommand", "label": "解禁命令", "type": "text", "required": true, "default": "/解禁" },
+    { "key": "statusCommand", "label": "状态命令", "type": "text", "required": true, "default": "/禁言状态" },
+    { "key": "defaultDurationMinutes", "label": "默认禁言分钟数", "type": "number", "required": true, "default": 10, "min": 1, "max": 43200 },
+    { "key": "maxDurationMinutes", "label": "最长禁言分钟数", "type": "number", "required": true, "default": 1440, "min": 1, "max": 43200 },
+    { "key": "allowGroupAdmins", "label": "允许群管理员执行", "description": "关闭后仅群主可以执行管理命令", "type": "boolean", "required": true, "default": true }
+  ]
+}

@@ -152,7 +152,90 @@ export function SystemSettingsView({ onSiteChange }: { onSiteChange: (site: Site
 
         <Tabs.Content value="qq" className="outline-none"><Card className="max-w-3xl"><CardHeader className="border-b"><div className="flex items-start justify-between"><div><CardTitle>QQ 互联登录</CardTitle><CardDescription className="mt-2">配置 QQ 互联网站应用，不是机器人 AppID。</CardDescription></div><Switch checked={settings.qq.enabled} onCheckedChange={(enabled) => setSettings({ ...settings, qq: { ...settings.qq, enabled } })} aria-label="启用 QQ 登录" /></div></CardHeader><CardContent className="space-y-4 pt-5"><label><span className="field-label">QQ 互联 AppID</span><Input value={settings.qq.appId} onChange={(event) => setSettings({ ...settings, qq: { ...settings.qq, appId: event.target.value } })} /></label><label><span className="field-label">App Secret</span><Input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder={settings.qq.appSecretConfigured ? "已配置，留空保持不变" : "请输入 App Secret"} /></label><label><span className="field-label">回调地址</span><Input value={settings.qq.redirectUri} onChange={(event) => setSettings({ ...settings, qq: { ...settings.qq, redirectUri: event.target.value } })} placeholder="https://example.com/api/auth/qq/callback" /><span className="mt-1.5 block text-[11px] text-muted-foreground">需与 QQ 互联后台填写的回调地址完全一致。</span></label><Button onClick={() => void run("qq", saveQQ, "QQ 登录设置已保存")} disabled={busy === "qq"}><KeyRound size={14} />保存 QQ 登录设置</Button></CardContent></Card></Tabs.Content>
 
-        <Tabs.Content value="payment" className="outline-none"><Card className="max-w-3xl"><CardHeader className="border-b"><div className="flex items-start justify-between"><div><CardTitle>会员支付</CardTitle><CardDescription className="mt-2">支持易支付兼容网关、人工审核和开发环境沙箱。</CardDescription></div><Switch checked={settings.payment.enabled} onCheckedChange={(enabled) => setSettings({ ...settings, payment: { ...settings.payment, enabled } })} aria-label="启用会员支付" /></div></CardHeader><CardContent className="space-y-4 pt-5"><label><span className="field-label">支付模式</span><Select value={settings.payment.provider} onValueChange={(provider) => setSettings({ ...settings, payment: { ...settings.payment, provider: provider as PaymentProvider } })} options={[{ value: "epay", label: "易支付兼容网关" }, { value: "manual", label: "人工收款审核" }, { value: "sandbox", label: "开发沙箱自动支付" }]} ariaLabel="选择支付模式" /></label>{settings.payment.provider === "epay" && <><label><span className="field-label">网关提交地址</span><Input value={settings.payment.epayGatewayUrl} onChange={(event) => setSettings({ ...settings, payment: { ...settings.payment, epayGatewayUrl: event.target.value } })} placeholder="https://pay.example.com/submit.php" /></label><label><span className="field-label">商户 ID</span><Input value={settings.payment.epayPid} onChange={(event) => setSettings({ ...settings, payment: { ...settings.payment, epayPid: event.target.value } })} /></label><label><span className="field-label">商户密钥</span><Input type="password" value={epayKey} onChange={(event) => setEpayKey(event.target.value)} placeholder={settings.payment.epayKeyConfigured ? "已配置，留空保持不变" : "请输入商户密钥"} /></label></>}{settings.payment.provider === "manual" && <label><span className="field-label">付款说明</span><Textarea value={settings.payment.manualInstructions} onChange={(event) => setSettings({ ...settings, payment: { ...settings.payment, manualInstructions: event.target.value } })} className="min-h-28 resize-y" placeholder="填写收款方式、联系渠道和审核说明" /></label>}{settings.payment.provider === "sandbox" && <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">沙箱模式创建订单后会立即标记支付成功，仅适合本地开发，生产环境会强制拒绝。</div>}<Button onClick={() => void run("payment", savePayment, "支付设置已保存")} disabled={busy === "payment"}><Save size={14} />保存支付设置</Button></CardContent></Card></Tabs.Content>
+        <Tabs.Content value="payment" className="outline-none">
+          <Card className="max-w-4xl overflow-hidden">
+            <CardHeader className="border-b px-5 py-5 sm:px-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTitle>会员支付</CardTitle>
+                    <Badge variant={settings.payment.enabled ? "success" : "secondary"}>{settings.payment.enabled ? "已启用" : "未启用"}</Badge>
+                  </div>
+                  <CardDescription className="mt-2">配置在线收银、人工审核或仅限开发环境的沙箱支付。</CardDescription>
+                </div>
+                <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2 sm:justify-start">
+                  <span className="text-xs font-medium">开放支付</span>
+                  <Switch checked={settings.payment.enabled} onCheckedChange={(enabled) => setSettings({ ...settings, payment: { ...settings.payment, enabled } })} aria-label="启用会员支付" />
+                </div>
+              </div>
+            </CardHeader>
+
+            <CardContent className="p-0">
+              <section className="space-y-2 px-5 py-6 sm:px-6">
+                <div>
+                  <div className="text-sm font-semibold">支付方式</div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">选择会员订单使用的收款与确认流程。</p>
+                </div>
+                <Select
+                  value={settings.payment.provider}
+                  onValueChange={(provider) => setSettings({ ...settings, payment: { ...settings.payment, provider: provider as PaymentProvider } })}
+                  options={[{ value: "epay", label: "易支付兼容网关" }, { value: "manual", label: "人工收款审核" }, { value: "sandbox", label: "开发沙箱自动支付" }]}
+                  ariaLabel="选择支付模式"
+                  className="h-10 sm:max-w-sm"
+                />
+              </section>
+
+              {settings.payment.provider === "epay" && (
+                <section className="border-t px-5 py-6 sm:px-6">
+                  <div className="mb-5 flex items-start gap-3">
+                    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md border bg-background text-muted-foreground"><CreditCard size={16} /></div>
+                    <div>
+                      <div className="text-sm font-semibold">易支付接口</div>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">保存商户信息后，密钥只在服务端加密存储。</p>
+                    </div>
+                  </div>
+                  <div className="grid gap-5 md:grid-cols-2">
+                    <label className="space-y-2 md:col-span-2">
+                      <span className="block text-xs font-medium">网关提交地址</span>
+                      <Input className="h-10" value={settings.payment.epayGatewayUrl} onChange={(event) => setSettings({ ...settings, payment: { ...settings.payment, epayGatewayUrl: event.target.value } })} placeholder="https://pay.example.com/submit.php" />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="block text-xs font-medium">商户 ID</span>
+                      <Input className="h-10" value={settings.payment.epayPid} onChange={(event) => setSettings({ ...settings, payment: { ...settings.payment, epayPid: event.target.value } })} />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="block text-xs font-medium">商户密钥</span>
+                      <Input className="h-10" type="password" value={epayKey} onChange={(event) => setEpayKey(event.target.value)} placeholder={settings.payment.epayKeyConfigured ? "已配置，留空保持不变" : "请输入商户密钥"} />
+                    </label>
+                  </div>
+                </section>
+              )}
+
+              {settings.payment.provider === "manual" && (
+                <section className="border-t px-5 py-6 sm:px-6">
+                  <label className="space-y-2">
+                    <span className="block text-xs font-medium">付款说明</span>
+                    <Textarea value={settings.payment.manualInstructions} onChange={(event) => setSettings({ ...settings, payment: { ...settings.payment, manualInstructions: event.target.value } })} className="min-h-32 resize-y" placeholder="填写收款方式、联系渠道和审核说明" />
+                  </label>
+                </section>
+              )}
+
+              {settings.payment.provider === "sandbox" && (
+                <section className="border-t px-5 py-6 sm:px-6">
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">沙箱模式创建订单后会立即标记支付成功，仅适合本地开发，生产环境会强制拒绝。</div>
+                </section>
+              )}
+
+              <div className="flex flex-col gap-3 border-t bg-muted/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <p className="text-xs leading-5 text-muted-foreground">保存后，新创建的会员订单立即使用当前配置。</p>
+                <Button className="h-10 shrink-0 sm:min-w-36" onClick={() => void run("payment", savePayment, "支付设置已保存")} disabled={busy === "payment"}>
+                  {busy === "payment" ? <LoaderCircle className="animate-spin" size={14} /> : <Save size={14} />}
+                  {busy === "payment" ? "正在保存" : "保存支付设置"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </Tabs.Content>
 
         <Tabs.Content value="plans" className="outline-none"><div className="grid gap-4 lg:grid-cols-3">{plans.map((plan) => <Card key={plan.id}><CardHeader className="border-b"><div className="flex items-center justify-between"><CardTitle>{plan.name}</CardTitle><Badge variant={plan.id === "free" ? "secondary" : "outline"}>{plan.id}</Badge></div></CardHeader><CardContent className="space-y-3 pt-5"><label><span className="field-label">套餐名称</span><Input value={plan.name} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, name: event.target.value } : item))} /></label><label><span className="field-label">套餐介绍</span><Textarea value={plan.description} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, description: event.target.value } : item))} className="min-h-20 resize-y" /></label><div className="grid grid-cols-3 gap-2"><label><span className="field-label">机器人</span><Input type="number" min={0} value={plan.botQuota} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, botQuota: Number(event.target.value) } : item))} /></label><label><span className="field-label">插件</span><Input type="number" min={0} value={plan.pluginQuota} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, pluginQuota: Number(event.target.value) } : item))} /></label><label><span className="field-label">保留天</span><Input type="number" min={1} value={plan.eventRetentionDays} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, eventRetentionDays: Number(event.target.value) } : item))} /></label></div><div className="grid grid-cols-3 gap-2"><label><span className="field-label">月付 ¥</span><Input type="number" min={0} step="0.01" disabled={plan.id === "free"} value={yuan(plan.monthlyPriceCents)} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, monthlyPriceCents: cents(event.target.value) } : item))} /></label><label><span className="field-label">季付 ¥</span><Input type="number" min={0} step="0.01" disabled={plan.id === "free"} value={yuan(plan.quarterlyPriceCents)} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, quarterlyPriceCents: cents(event.target.value) } : item))} /></label><label><span className="field-label">年付 ¥</span><Input type="number" min={0} step="0.01" disabled={plan.id === "free"} value={yuan(plan.yearlyPriceCents)} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, yearlyPriceCents: cents(event.target.value) } : item))} /></label></div><label><span className="field-label">权益（每行一项）</span><Textarea value={plan.features.join("\n")} onChange={(event) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, features: event.target.value.split("\n").map((value) => value.trim()).filter(Boolean) } : item))} className="min-h-28 resize-y" /></label><Button className="w-full" variant="outline" disabled={busy === `plan:${plan.id}`} onClick={() => void run(`plan:${plan.id}`, () => savePlan(plan), `${plan.name}已保存`)}><Save size={14} />保存套餐</Button></CardContent></Card>)}</div></Tabs.Content>
 

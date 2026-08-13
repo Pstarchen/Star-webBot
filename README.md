@@ -10,14 +10,15 @@
 - 管理员可在控制台配置网站名称、标语、介绍、Logo、favicon、ICP备案号、网安备案号和版权信息。
 - 管理员可维护月付、季付、年付价格，并配置易支付兼容网关、人工审核或开发沙箱；支付成功后自动发放并顺延会员有效期。
 - 管理员可分配套餐、覆盖单用户机器人配额、调整角色并停用账号。
-- 添加机器人时真实验证 AppID/Client Secret，Secret 使用 AES-256-GCM 加密。
+- 添加机器人时真实验证 AppID/Client Secret，并通过 `GET /users/@me` 自动读取 QQ 官方机器人名称；Secret 使用 AES-256-GCM 加密。
 - 机器人默认使用 WebSocket，也可选择 QQ 官方 Webhook 接入。WebSocket 按官方建议分片数建立完整连接组，支持服务端 Intents 策略、Identify 频控、Heartbeat、ACK 超时、Resume、抖动退避和重启自动恢复。
 - SQLite 租约保证单机多 Node 实例下同一机器人只有一个 Gateway 所有者，实例异常后可自动接管。
 - Gateway 事件持久化到 SQLite，并按会员套餐自动清理过期记录。
 - 支持单聊/群聊消息调试、JSON REST 请求台、原始 multipart 代理和 200MB 富媒体分片上传。
 - 支持 QQ 官方 Webhook 接入：每个机器人提供不可猜测的回调地址，完成 Ed25519 challenge、签名校验和事件去重。
 - 开发者使用 `sdk/plugin` 编写插件并构建 ZIP，导入后由平台管理项目、版本、机器人安装、动态配置、优先级、启停、KV 和运行记录。
-- 托管插件在 QuickJS 中隔离运行，只提交受权限控制的回复、QQ OpenAPI、KV 和日志动作，不接触机器人 Secret、宿主文件系统或网络。
+- 托管插件在 QuickJS 中隔离运行，可异步读取受权限控制的 QQ OpenAPI 响应并继续业务逻辑，不接触机器人 Secret、宿主文件系统或任意网络。
+- SDK 内置官方当前 34 个 OpenAPI 端点目录和通用同源请求；频道扩展及官方后续新增 REST 接口无需等待平台发版即可调用。
 - 插件市场支持搜索分类、私有安装、开发者上架申请和管理员审核；内置官方关键词回复插件来自数据库，不是前端演示数据。
 - 旧 `sdk/node` 长轮询远程应用接口保留为兼容能力，支持 HMAC、Nonce、防重放、事件租约和受控 OpenAPI。
 - Radix UI + shadcn 风格响应式控制台，支持 240/64px 侧栏、移动抽屉和 reduced-motion。

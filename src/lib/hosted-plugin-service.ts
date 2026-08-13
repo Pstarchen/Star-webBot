@@ -528,7 +528,7 @@ export async function dispatchHostedPlugins(botId: string, eventType: string, ev
   let messageSequence = 1;
   for (const row of rows) {
     const manifest = parseManifest(row.manifest_json);
-    if (!manifest.events.includes(eventType)) continue;
+    if (!manifest.events.includes("*") && !manifest.events.includes(eventType)) continue;
     executed += 1;
     let durationMs = 0;
     let actionCount = 0;
@@ -539,9 +539,12 @@ export async function dispatchHostedPlugins(botId: string, eventType: string, ev
         event: { type: eventType, botId, data: eventData },
         config: readInstallationConfig(row.id),
         kv: readInstallationKv(row.id),
+        qqRequest: new Set(manifest.permissions).has("qq:api")
+          ? (method, path, body, signal) => getBotClientInternal(botId).request(validateQQApiPath(path), method, body, signal)
+          : async () => { throw new Error("PLUGIN_PERMISSION_DENIED:qq:api"); },
       });
       durationMs = result.durationMs;
-      actionCount = result.actions.length;
+      actionCount = result.actions.length + result.qqRequestCount;
       logs = result.logs;
       const permissions = new Set(manifest.permissions);
       if (result.logs.length && !permissions.has("log:write")) throw new Error("PLUGIN_PERMISSION_DENIED:log:write");

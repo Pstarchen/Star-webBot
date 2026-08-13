@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getBotClientInternal } from "@/lib/bot-service";
 import { authenticatePluginCanonicalRequest } from "@/lib/plugin-service";
-import { QQApiError, validateQQApiPath } from "@/lib/qq-api";
+import { isQQApiError, validateQQApiPath } from "@/lib/qq-api";
 import { RAW_UPLOAD_MAX_BYTES, rawUploadBody, removeRawUpload, spoolRequestBody, validateMultipartContentType } from "@/lib/raw-upload";
 import { RateLimitError, consumeRateLimit, rateLimitKey } from "@/lib/security";
 
@@ -28,7 +28,7 @@ export async function POST(request: Request, context: { params: Promise<{ plugin
     return NextResponse.json(await getBotClientInternal(authentication.botId).requestRaw(path, "POST", rawUploadBody(tempPath), contentType));
   } catch (error) {
     if (error instanceof RateLimitError) return NextResponse.json({ message: "SDK 请求过于频繁" }, { status: 429 });
-    if (error instanceof QQApiError) return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: 400 });
+    if (isQQApiError(error)) return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: 400 });
     if (error instanceof Error && error.message === "PLUGIN_REQUEST_REPLAYED") return NextResponse.json({ message: "SDK 请求已被使用" }, { status: 409 });
     if (error instanceof Error && error.message === "MULTIPART_BODY_TOO_LARGE") return NextResponse.json({ message: "multipart 请求不能超过 201MB" }, { status: 413 });
     return NextResponse.json({ message: "SDK 身份或 multipart 请求无效" }, { status: 401 });

@@ -92,21 +92,23 @@ export function listBots(user: SessionUser) {
   return rows.map(toBot);
 }
 
-export async function createBot(user: SessionUser, input: { name: string; appId: string; clientSecret: string; environment: "production" | "sandbox"; connectionMode: BotConnectionMode }) {
+export async function createBot(user: SessionUser, input: { appId: string; clientSecret: string; environment: "production" | "sandbox"; connectionMode: BotConnectionMode }) {
   const database = getDatabase();
   const usage = database.prepare("SELECT COUNT(*) AS count FROM bots WHERE user_id = ?").get(user.id) as { count: number };
   const currentUser = database.prepare("SELECT bot_quota FROM users WHERE id = ?").get(user.id) as { bot_quota: number } | undefined;
   if (!currentUser || usage.count >= currentUser.bot_quota) throw new Error("BOT_QUOTA_EXCEEDED");
 
   const client = new QQBotApiClient({ appId: input.appId.trim(), clientSecret: input.clientSecret });
-  await client.getAccessToken();
+  const profile = (await client.getBotProfile()).body;
+  const name = typeof profile?.username === "string" ? profile.username.trim() : "";
+  if (!name || typeof profile?.id !== "string" || !profile.id.trim()) throw new Error("QQ_BOT_PROFILE_INVALID");
 
   const id = randomUUID();
   const now = new Date().toISOString();
   database.prepare(`
     INSERT INTO bots (id, user_id, name, app_id, client_secret_cipher, environment, connection_mode, intents, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?)
-  `).run(id, user.id, input.name.trim(), input.appId.trim(), encryptSecret(input.clientSecret), input.environment, input.connectionMode, defaultQQGatewayIntents, now, now);
+  `).run(id, user.id, name, input.appId.trim(), encryptSecret(input.clientSecret), input.environment, input.connectionMode, defaultQQGatewayIntents, now, now);
   clientCache().set(id, client);
   writeAuditLog(user.id, "bot.create", "bot", id, { appId: maskAppId(input.appId), environment: input.environment, connectionMode: input.connectionMode });
   return toBot(database.prepare("SELECT * FROM bots WHERE id = ?").get(id) as BotRow);
@@ -215,6 +217,54 @@ export function recordEvent(botId: string, input: { type: string; scene: string;
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, botId, input.type, input.scene, input.status || "success", input.latency || 0, input.content || "", JSON.stringify(input.payload), input.traceId || null, new Date().toISOString());
   return id;
+}
+
+const replyEventTypes = {
+  c2c: new Set(["C2C_MESSAGE_CREATE"]),
+  group: new Set(["GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"]),
+} as const;
+
+export function getMessageReplyContext(user: SessionUser, botId: string, targetType: "c2c" | "group", targetOpenid: string) {
+  getBotRow(user, botId);
+  const database = getDatabase();
+  const validityMs = targetType === "group" ? 5 * 60_000 : 60 * 60_000;
+  const rows = database.prepare(`
+    SELECT event_type, payload_json, received_at
+    FROM event_logs
+    WHERE bot_id = ? AND received_at >= ?
+    ORDER BY received_at DESC
+    LIMIT 200
+  `).all(botId, new Date(Date.now() - validityMs).toISOString()) as Array<{
+    event_type: string;
+    payload_json: string;
+    received_at: string;
+  }>;
+
+  for (const row of rows) {
+    if (!replyEventTypes[targetType].has(row.event_type)) continue;
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(row.payload_json) as Record<string, unknown>; }
+    catch { continue; }
+    const data = payload.d && typeof payload.d === "object" ? payload.d as Record<string, unknown> : payload;
+    const author = data.author && typeof data.author === "object" ? data.author as Record<string, unknown> : {};
+    const eventTarget = targetType === "group"
+      ? data.group_openid || data.group_id
+      : author.user_openid || author.id || data.user_openid;
+    const messageId = typeof data.id === "string" ? data.id : null;
+    if (eventTarget !== targetOpenid || !messageId) continue;
+
+    const previousReplies = database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM event_logs
+      WHERE bot_id = ? AND event_type = 'OUTBOUND_MESSAGE'
+        AND json_extract(payload_json, '$.request.msg_id') = ?
+    `).get(botId, messageId) as { count: number };
+    const maxReplies = targetType === "group" ? 5 : 4;
+    if (previousReplies.count >= maxReplies) throw new Error("MESSAGE_REPLY_LIMIT_REACHED");
+    return { msgId: messageId, msgSeq: previousReplies.count + 1, receivedAt: row.received_at };
+  }
+
+  throw new Error("MESSAGE_REPLY_CONTEXT_NOT_FOUND");
 }
 
 export function listEvents(user: SessionUser, limit = 100) {

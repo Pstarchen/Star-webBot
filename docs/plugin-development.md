@@ -67,7 +67,7 @@ node sdk/plugin/build.mjs examples/hosted-plugin dist/hello-starbot.zip
 
 支持的配置字段类型为 `text`、`textarea`、`number`、`boolean`、`select`。配置由平台按机器人安装实例保存，同一个插件安装到不同机器人时可以使用不同配置。
 
-`events` 仅过滤平台已经从 QQ WebSocket 或 QQ 官方 Webhook 接收到的事件，不会修改 QQ 开放平台后台订阅。WebSocket Identify 使用平台维护的 Intent 策略，用户和插件均不填写原始 Intent 位图。
+`events` 仅过滤平台已经从 QQ WebSocket 或 QQ 官方 Webhook 接收到的事件，不会修改 QQ 开放平台后台订阅。填写 `["*"]` 可接收平台收到的全部事件。WebSocket Identify 使用平台维护的 Intent 策略，用户和插件均不填写原始 Intent 位图。
 
 ## 事件处理器
 
@@ -75,19 +75,20 @@ node sdk/plugin/build.mjs examples/hosted-plugin dist/hello-starbot.zip
 
 ```js
 StarBot.definePlugin({
-  onEvent(event, sdk) {
+  async onEvent(event, sdk) {
     const content = String(event.data && event.data.content || "");
     if (!content.includes(String(sdk.config.keyword))) return;
 
+    const profile = await sdk.qq.getBotProfile();
     const count = sdk.kv.get("count", 0) + 1;
     sdk.kv.set("count", count);
-    sdk.reply.text(`${sdk.config.reply}\n第 ${count} 次触发`);
+    sdk.reply.text(`${profile.body.username}：${sdk.config.reply}\n第 ${count} 次触发`);
     sdk.log.info("keyword matched", { count });
   },
 });
 ```
 
-`onEvent` 当前为同步处理器。它可以收集平台动作，但不能使用 `async`、Promise、定时器、Node.js 模块、文件系统或直接网络请求。
+`onEvent` 支持同步或异步处理器。插件可以 `await sdk.qq.*` 读取 QQ 的响应体和 Trace ID，但不能使用定时器、Node.js 模块、文件系统或直接网络请求。网络访问只允许通过平台注入的 QQ SDK，并受清单权限、路径校验和超时限制。
 
 事件结构：
 
@@ -117,13 +118,34 @@ sdk.reply.keyboard({ content: { rows: [] } });
 ### 受控 QQ OpenAPI
 
 ```js
-sdk.qq.request("POST", "/v2/groups/<group_openid>/messages", {
+const sent = await sdk.qq.sendGroup("<group_openid>", {
   content: "主动消息",
   msg_type: 0
 });
+
+await sdk.qq.recallGroup("<group_openid>", sent.body.id);
+
+await sdk.qq.muteGroupMember(
+  "<group_openid>",
+  "<member_openid>",
+  "2026-08-14T12:00:00+08:00"
+);
+
+await sdk.qq.unmuteGroupMember("<group_openid>", "<member_openid>");
+
+const requests = await sdk.qq.callEndpoint(
+  "listGroupJoinRequests",
+  { group_openid: "<group_openid>" },
+  undefined,
+  { limit: 20 }
+);
 ```
 
-只有声明 `qq:api` 权限的插件可以提交 OpenAPI 动作。平台只接受 QQ Bot API 相对路径，拒绝外部 URL、路径穿越和未声明权限。机器人实际能调用哪些接口仍由 QQ 开放平台授权决定。
+`sdk.qq.callEndpoint(endpointId, pathParams, body, query)` 覆盖官方当前自动生成目录的 34 个接口并负责路径参数编码；`sdk.qq.request(method, path, body)` 可调用频道扩展接口及官方后续新增的 JSON REST 接口。两者都返回 `{ body, traceId }`。只有声明 `qq:api` 权限的插件可以调用，平台会在网络请求前检查权限，只接受 QQ Bot API 相对路径，并拒绝外部 URL 和路径穿越。
+
+通用方法覆盖 QQ 官方文档当前及后续新增的 JSON REST 接口，包括机器人、群聊、频道、成员、身份组、消息、公告、日程和互动等能力。远程 Node SDK 另提供 `callMultipart(path, formData)` 处理官方文件上传接口；托管插件不能直接读取宿主文件系统或自行联网。
+
+普通 QQ 群成员禁言使用 `/v2/groups/{group_openid}/restrict_chat_setting`，与 QQ 频道的 `/guilds/{guild_id}/members/{user_id}/mute` 不是同一接口。机器人必须是该群管理员；只能禁言普通成员，不能禁言群主、管理员或机器人。`mute_expire_at` 使用 RFC3339 时间。撤回单聊或群聊消息时，QQ 官方限制消息发送后 2 分钟内可撤回。最终可调用范围仍由 QQ 开放平台授权和机器人所在会话权限决定。
 
 ### 插件 KV
 
@@ -152,7 +174,7 @@ sdk.stopPropagation();
 | `reply:markdown` | Markdown 回复 |
 | `reply:ark` | ARK 回复 |
 | `reply:keyboard` | keyboard 回复 |
-| `qq:api` | 提交受控 QQ OpenAPI 动作 |
+| `qq:api` | 调用受控 QQ OpenAPI 并读取响应 |
 | `storage:kv` | 使用安装级 KV |
 | `log:write` | 写入插件运行日志 |
 
@@ -161,8 +183,8 @@ sdk.stopPropagation();
 ## 运行限制
 
 - QuickJS WebAssembly 隔离运行，不在 Next.js 主进程中 `import()` 插件代码。
-- 单次执行 CPU 截止时间 150ms、内存 16MB、栈 512KB。
-- 单次最多 12 个动作、30 条日志，输入和输出 JSON 各最大 64KB。
+- 单段插件代码 CPU 截止时间 150ms、包含 QQ 等待在内的墙钟时间 30 秒、内存 16MB、栈 512KB。
+- 单次最多 12 个动作或 QQ 请求、30 条日志，输入、输出和单个 QQ 响应 JSON 各最大 64KB。
 - ZIP 最大 2MB、最多 40 个文件、单文件最大 1MB、总解压大小最大 4MB。
 - 连续 5 次失败后自动停用该安装实例，需要用户检查错误后手动重新启用。
 

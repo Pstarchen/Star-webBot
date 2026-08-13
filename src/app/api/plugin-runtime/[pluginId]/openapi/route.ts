@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getBotClientInternal } from "@/lib/bot-service";
 import { authenticatePluginRequest } from "@/lib/plugin-service";
-import { QQApiError, validateQQApiPath } from "@/lib/qq-api";
+import { isQQApiError, validateQQApiPath } from "@/lib/qq-api";
 import { RateLimitError, consumeRateLimit } from "@/lib/security";
 
 const schema = z.object({
@@ -42,7 +42,7 @@ export async function POST(request: Request, context: { params: Promise<{ plugin
   try {
     return NextResponse.json(await getBotClientInternal(authentication.botId).request(path, parsed.data.method, parsed.data.body));
   } catch (error) {
-    if (error instanceof QQApiError) return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: 400 });
+    if (isQQApiError(error)) return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: 400 });
     return NextResponse.json({ message: "QQ OpenAPI 请求失败" }, { status: 502 });
   }
 }

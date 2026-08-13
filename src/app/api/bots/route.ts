@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createBot, listBots } from "@/lib/bot-service";
-import { QQApiError } from "@/lib/qq-api";
+import { isQQApiError } from "@/lib/qq-api";
 import { getSession } from "@/lib/session";
 import { assertTrustedRequest } from "@/lib/security";
 
 const createSchema = z.object({
-  name: z.string().trim().min(2).max(40),
   appId: z.string().trim().min(4).max(80),
   clientSecret: z.string().min(6).max(256),
   environment: z.enum(["production", "sandbox"]),
@@ -29,7 +28,8 @@ export async function POST(request: Request) {
   try {
     return NextResponse.json({ bot: await createBot(user, parsed.data) }, { status: 201 });
   } catch (error) {
-    if (error instanceof QQApiError) return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: 400 });
+    if (isQQApiError(error)) return NextResponse.json({ message: error.message, traceId: error.traceId, detail: error.responseBody }, { status: 400 });
+    if (error instanceof Error && error.message === "QQ_BOT_PROFILE_INVALID") return NextResponse.json({ message: "QQ 未返回有效的机器人资料，请检查应用类型和权限" }, { status: 400 });
     if (error instanceof Error && error.message === "BOT_QUOTA_EXCEEDED") return NextResponse.json({ message: "机器人数量已达到管理员设置的上限" }, { status: 409 });
     if (error instanceof Error && error.message.includes("UNIQUE")) return NextResponse.json({ message: "该 AppID 已添加" }, { status: 409 });
     return NextResponse.json({ message: "机器人添加失败" }, { status: 500 });

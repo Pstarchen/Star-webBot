@@ -14,6 +14,8 @@ let eventRetentionModule: typeof import("@/lib/event-retention");
 let eventIngestionModule: typeof import("@/lib/event-ingestion");
 let gatewayCoordinationModule: typeof import("@/lib/gateway-coordination");
 let membershipModule: typeof import("@/lib/membership-service");
+let hostedPluginRuntimeModule: typeof import("@/lib/hosted-plugin-runtime");
+let hostedPluginServiceModule: typeof import("@/lib/hosted-plugin-service");
 let passwordModule: typeof import("@/lib/password");
 let pluginModule: typeof import("@/lib/plugin-service");
 let qqApiModule: typeof import("@/lib/qq-api");
@@ -32,7 +34,7 @@ beforeAll(async () => {
   process.env.BOOTSTRAP_ADMIN_PASSWORD = "admin-password-2026";
   process.env.ALLOW_PRIVATE_WEBHOOKS = "false";
   process.env.ALLOW_INSECURE_WEBHOOKS = "false";
-  [databaseModule, botServiceModule, cryptoModule, eventRetentionModule, eventIngestionModule, gatewayCoordinationModule, membershipModule, passwordModule, pluginModule, qqApiModule, qqMediaModule, qqWebhookModule, qqWebhookTokenModule, rawUploadModule, securityModule, sessionModule, systemSettingsModule, userServiceModule] = await Promise.all([
+  [databaseModule, botServiceModule, cryptoModule, eventRetentionModule, eventIngestionModule, gatewayCoordinationModule, membershipModule, hostedPluginRuntimeModule, hostedPluginServiceModule, passwordModule, pluginModule, qqApiModule, qqMediaModule, qqWebhookModule, qqWebhookTokenModule, rawUploadModule, securityModule, sessionModule, systemSettingsModule, userServiceModule] = await Promise.all([
     import("@/lib/database"),
     import("@/lib/bot-service"),
     import("@/lib/crypto-vault"),
@@ -40,6 +42,8 @@ beforeAll(async () => {
     import("@/lib/event-ingestion"),
     import("@/lib/gateway-coordination"),
     import("@/lib/membership-service"),
+    import("@/lib/hosted-plugin-runtime"),
+    import("@/lib/hosted-plugin-service"),
     import("@/lib/password"),
     import("@/lib/plugin-service"),
     import("@/lib/qq-api"),
@@ -352,6 +356,203 @@ describe("request security", () => {
     expect(() => qqApiModule.validateQQApiPath("/v2/../secret")).toThrow("QQ_API_PATH_INVALID");
   });
 
+  it("recognizes QQ API errors created by a stale hot-reload module", () => {
+    const staleModuleError = Object.assign(new Error("QQ API request failed"), {
+      name: "QQApiError",
+      status: 500,
+      traceId: "trace-hot-reload",
+      responseBody: { code: 11703 },
+    });
+
+    expect(staleModuleError).not.toBeInstanceOf(qqApiModule.QQApiError);
+    expect(qqApiModule.isQQApiError(staleModuleError)).toBe(true);
+    expect(qqApiModule.isQQApiError({ name: "QQApiError", status: 500 })).toBe(false);
+  });
+
+  it("selects a valid recent QQ event and increments reply sequence", () => {
+    const user = sessionModule.authenticate("user@example.com", "strong-password");
+    expect(user).not.toBeNull();
+    const database = databaseModule.getDatabase();
+    const botId = randomUUID();
+    const now = new Date().toISOString();
+    database.prepare(`INSERT INTO bots (id, user_id, name, app_id, client_secret_cipher, environment, intents, status, created_at, updated_at) VALUES (?, ?, 'Reply Bot', ?, ?, 'sandbox', 0, 'offline', ?, ?)`)
+      .run(botId, user!.id, `reply-app-${botId}`, cryptoModule.encryptSecret("reply-secret"), now, now);
+    botServiceModule.recordEvent(botId, {
+      type: "GROUP_AT_MESSAGE_CREATE",
+      scene: "群聊",
+      payload: { op: 0, t: "GROUP_AT_MESSAGE_CREATE", d: { id: "message-reply-1", group_openid: "group-reply-1" } },
+    });
+
+    expect(botServiceModule.getMessageReplyContext(user!, botId, "group", "group-reply-1")).toMatchObject({ msgId: "message-reply-1", msgSeq: 1 });
+    botServiceModule.recordEvent(botId, {
+      type: "OUTBOUND_MESSAGE",
+      scene: "群聊",
+      payload: { request: { msg_id: "message-reply-1", msg_seq: 1 }, response: {} },
+    });
+    expect(botServiceModule.getMessageReplyContext(user!, botId, "group", "group-reply-1")).toMatchObject({ msgId: "message-reply-1", msgSeq: 2 });
+    for (let sequence = 2; sequence <= 5; sequence += 1) {
+      botServiceModule.recordEvent(botId, {
+        type: "OUTBOUND_MESSAGE",
+        scene: "群聊",
+        payload: { request: { msg_id: "message-reply-1", msg_seq: sequence }, response: {} },
+      });
+    }
+    expect(() => botServiceModule.getMessageReplyContext(user!, botId, "group", "group-reply-1")).toThrow("MESSAGE_REPLY_LIMIT_REACHED");
+    database.prepare(`
+      INSERT INTO event_logs (id, bot_id, event_type, scene, status, latency_ms, content, payload_json, trace_id, received_at)
+      VALUES (?, ?, 'GROUP_AT_MESSAGE_CREATE', '群聊', 'success', 0, '', ?, NULL, ?)
+    `).run(randomUUID(), botId, JSON.stringify({ d: { id: "expired-message", group_openid: "expired-group" } }), new Date(Date.now() - 6 * 60_000).toISOString());
+    expect(() => botServiceModule.getMessageReplyContext(user!, botId, "group", "expired-group")).toThrow("MESSAGE_REPLY_CONTEXT_NOT_FOUND");
+    expect(() => botServiceModule.getMessageReplyContext(user!, botId, "group", "another-group")).toThrow("MESSAGE_REPLY_CONTEXT_NOT_FOUND");
+  });
+
+  it("uses the official QQ send, recall, and group mute request contracts", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(input), init });
+      if (String(input).endsWith("/app/getAppAccessToken")) return Response.json({ access_token: "test-access-token", expires_in: 7200 });
+      return Response.json({ ok: true }, { headers: { "X-Tps-trace-ID": "trace-contract-test" } });
+    }) as typeof fetch;
+
+    try {
+      const client = new qqApiModule.QQBotApiClient({ appId: "test-app", clientSecret: "test-secret" });
+      await client.getBotProfile();
+      await client.request("/interactions/interaction%2Fid", "PUT", { code: 0 });
+      await client.request("/channels/channel%2Fid", "PATCH", { name: "updated" });
+      await client.sendGroupMessage("group/open id", { content: "hello", msg_type: 0 });
+      await client.recallC2CMessage("user/open id", "message/id");
+      await client.recallGroupMessage("group/open id", "message/id");
+      await client.getGroupMuteSettings("group/open id");
+      await client.muteGroupMember("group/open id", "member-openid", "2026-08-14T12:00:00+08:00");
+      await client.unmuteGroupMember("group/open id", "member-openid");
+
+      const apiRequests = requests.slice(1);
+      expect(apiRequests.map((request) => [request.init?.method, request.url])).toEqual([
+        ["GET", "https://api.bot.qq.com/users/@me"],
+        ["PUT", "https://api.bot.qq.com/interactions/interaction%2Fid"],
+        ["PATCH", "https://api.bot.qq.com/channels/channel%2Fid"],
+        ["POST", "https://api.bot.qq.com/v2/groups/group%2Fopen%20id/messages"],
+        ["DELETE", "https://api.bot.qq.com/v2/users/user%2Fopen%20id/messages/message%2Fid"],
+        ["DELETE", "https://api.bot.qq.com/v2/groups/group%2Fopen%20id/messages/message%2Fid"],
+        ["GET", "https://api.bot.qq.com/v2/groups/group%2Fopen%20id/restrict_chat_setting"],
+        ["POST", "https://api.bot.qq.com/v2/groups/group%2Fopen%20id/restrict_chat_setting"],
+        ["POST", "https://api.bot.qq.com/v2/groups/group%2Fopen%20id/restrict_chat_setting"],
+      ]);
+      expect(apiRequests.every((request) => new Headers(request.init?.headers).get("Authorization") === "QQBot test-access-token")).toBe(true);
+      expect(JSON.parse(String(apiRequests[1].init?.body))).toEqual({ code: 0 });
+      expect(JSON.parse(String(apiRequests[2].init?.body))).toEqual({ name: "updated" });
+      expect(apiRequests[4].init?.body).toBeUndefined();
+      expect(JSON.parse(String(apiRequests[7].init?.body))).toEqual({
+        members: [{ op: "add", member_openid: "member-openid", mute_expire_at: "2026-08-14T12:00:00+08:00" }],
+      });
+      expect(JSON.parse(String(apiRequests[8].init?.body))).toEqual({
+        members: [{ op: "del", member_openid: "member-openid", mute_expire_at: "" }],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("creates a bot using the official QQ profile name", async () => {
+    const user = sessionModule.registerUser({ name: "Bot Owner", email: `bot-owner-${randomUUID()}@example.com`, password: "strong-password" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      if (String(input).endsWith("/app/getAppAccessToken")) return Response.json({ access_token: "profile-access-token", expires_in: 7200 });
+      if (String(input).endsWith("/users/@me")) return Response.json({ id: "qq-bot-id", username: "QQ 官方测试助手", bot: true });
+      return Response.json({}, { status: 404 });
+    }) as typeof fetch;
+
+    try {
+      const bot = await botServiceModule.createBot(user, {
+        appId: `profile-app-${randomUUID()}`,
+        clientSecret: "profile-client-secret",
+        environment: "sandbox",
+        connectionMode: "websocket",
+      });
+      expect(bot.name).toBe("QQ 官方测试助手");
+      expect(databaseModule.getDatabase().prepare("SELECT name FROM bots WHERE id = ?").get(bot.id)).toEqual({ name: "QQ 官方测试助手" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("maps hosted plugin QQ helpers to official OpenAPI actions", async () => {
+    const result = await hostedPluginRuntimeModule.executeHostedPlugin({
+      code: `StarBot.definePlugin({ onEvent(event, sdk) {
+        sdk.qq.getBotProfile();
+        sdk.qq.sendGroup("group/open id", { content: "hello", msg_type: 0 });
+        sdk.qq.recallC2C("user/open id", "message/id");
+        sdk.qq.recallGroup("group/open id", "message/id");
+        sdk.qq.getGroupMuteSettings("group/open id");
+        sdk.qq.muteGroupMember("group/open id", "member-openid", "2026-08-14T12:00:00+08:00");
+        sdk.qq.unmuteGroupMember("group/open id", "member-openid");
+      } });`,
+      event: { type: "GROUP_AT_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+    });
+
+    expect(result.actions).toEqual([
+      { kind: "qq_api", method: "GET", path: "/users/@me" },
+      { kind: "qq_api", method: "POST", path: "/v2/groups/group%2Fopen%20id/messages", body: { content: "hello", msg_type: 0 } },
+      { kind: "qq_api", method: "DELETE", path: "/v2/users/user%2Fopen%20id/messages/message%2Fid" },
+      { kind: "qq_api", method: "DELETE", path: "/v2/groups/group%2Fopen%20id/messages/message%2Fid" },
+      { kind: "qq_api", method: "GET", path: "/v2/groups/group%2Fopen%20id/restrict_chat_setting" },
+      { kind: "qq_api", method: "POST", path: "/v2/groups/group%2Fopen%20id/restrict_chat_setting", body: { members: [{ op: "add", member_openid: "member-openid", mute_expire_at: "2026-08-14T12:00:00+08:00" }] } },
+      { kind: "qq_api", method: "POST", path: "/v2/groups/group%2Fopen%20id/restrict_chat_setting", body: { members: [{ op: "del", member_openid: "member-openid", mute_expire_at: "" }] } },
+    ]);
+  });
+
+  it("blocks hosted plugin QQ actions before network access without qq:api permission", async () => {
+    const database = databaseModule.getDatabase();
+    const user = sessionModule.authenticate("user@example.com", "strong-password");
+    expect(user).not.toBeNull();
+    const now = new Date().toISOString();
+    const botId = randomUUID();
+    const projectId = randomUUID();
+    const versionId = randomUUID();
+    const installationId = randomUUID();
+    const manifest = {
+      schemaVersion: 1,
+      id: `permission-test-${projectId}`,
+      name: "Permission Test",
+      version: "1.0.0",
+      description: "Verifies QQ API permission enforcement.",
+      author: "StarBot Test",
+      category: "Testing",
+      tags: [],
+      entry: "index.js",
+      events: ["GROUP_AT_MESSAGE_CREATE"],
+      permissions: [],
+      commands: [],
+      configSchema: [],
+    };
+    database.prepare(`INSERT INTO bots (id, user_id, name, app_id, client_secret_cipher, environment, intents, status, created_at, updated_at) VALUES (?, ?, 'Permission Bot', ?, ?, 'sandbox', 0, 'offline', ?, ?)`)
+      .run(botId, user!.id, `permission-app-${botId}`, cryptoModule.encryptSecret("permission-secret"), now, now);
+    database.prepare(`INSERT INTO plugin_projects (id, owner_user_id, slug, name, description, author, category, tags_json, status, created_at, updated_at) VALUES (?, ?, ?, 'Permission Test', 'Verifies QQ API permission enforcement.', 'StarBot Test', 'Testing', '[]', 'private', ?, ?)`)
+      .run(projectId, user!.id, `permission-test-${projectId}`, now, now);
+    database.prepare(`INSERT INTO plugin_versions (id, project_id, version, manifest_json, entry_code, readme, package_sha256, package_size, validation_json, status, created_at) VALUES (?, ?, '1.0.0', ?, ?, NULL, ?, 1, '{}', 'active', ?)`)
+      .run(versionId, projectId, JSON.stringify(manifest), `StarBot.definePlugin({ onEvent(event, sdk) { sdk.qq.sendGroup("group-openid", { content: "blocked", msg_type: 0 }); } });`, "0".repeat(64), now);
+    database.prepare(`INSERT INTO plugin_installations (id, user_id, bot_id, project_id, version_id, enabled, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 50, ?, ?)`)
+      .run(installationId, user!.id, botId, projectId, versionId, now, now);
+
+    const originalFetch = globalThis.fetch;
+    let networkRequests = 0;
+    globalThis.fetch = (async () => { networkRequests += 1; return Response.json({}); }) as typeof fetch;
+    try {
+      await hostedPluginServiceModule.dispatchHostedPlugins(botId, "GROUP_AT_MESSAGE_CREATE", { group_openid: "group-openid" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(networkRequests).toBe(0);
+    expect(database.prepare("SELECT status, error FROM plugin_runs WHERE installation_id = ? ORDER BY created_at DESC LIMIT 1").get(installationId)).toEqual({
+      status: "failed",
+      error: "PLUGIN_PERMISSION_DENIED:qq:api",
+    });
+  });
+
   it("authenticates signed plugin requests and rejects nonce replay", () => {
     const database = databaseModule.getDatabase();
     const user = sessionModule.authenticate("user@example.com", "strong-password");
@@ -523,7 +724,10 @@ describe("request security", () => {
     expect(after).toEqual(before);
   });
 
-  it("uploads exact file ranges and confirms every QQ media part", async () => {
+  it.each([
+    { firstPartIndex: 0, label: "documented zero-based" },
+    { firstPartIndex: 1, label: "QQ production one-based" },
+  ])("uploads exact file ranges for $label media parts", async ({ firstPartIndex }) => {
     const bytes = Buffer.from("abcdefghij");
     const tempPath = path.join(temporaryDirectory, "media-parts.bin");
     fs.writeFileSync(tempPath, bytes);
@@ -536,9 +740,9 @@ describe("request security", () => {
             upload_id: "upload-test-2026",
             block_size: "4",
             parts: [
-              { index: 0, presigned_url: "https://upload.example/0", block_size: "4" },
-              { index: 1, presigned_url: "https://upload.example/1", block_size: "4" },
-              { index: 2, presigned_url: "https://upload.example/2", block_size: "2" },
+              { index: firstPartIndex, presigned_url: "https://upload.example/0", block_size: "4" },
+              { index: firstPartIndex + 1, presigned_url: "https://upload.example/1", block_size: "4" },
+              { index: firstPartIndex + 2, presigned_url: "https://upload.example/2", block_size: "2" },
             ],
             upload_config: { concurrency: 2, retry_timeout: 5, retry_delay: 1 },
           },
@@ -548,12 +752,15 @@ describe("request security", () => {
         return { body: {}, traceId: null };
       },
     };
-    const uploadedParts = new Map<string, Buffer>();
+    const uploadedParts = new Map<string, { bytes: Buffer; contentLength: string | null }>();
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const chunks: Buffer[] = [];
       for await (const chunk of init?.body as unknown as NodeJS.ReadableStream) chunks.push(Buffer.from(chunk));
-      uploadedParts.set(String(input), Buffer.concat(chunks));
+      uploadedParts.set(String(input), {
+        bytes: Buffer.concat(chunks),
+        contentLength: new Headers(init?.headers).get("Content-Length"),
+      });
       return new Response(null, { status: 200 });
     }) as typeof fetch;
     try {
@@ -573,19 +780,102 @@ describe("request security", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
-    expect(uploadedParts.get("https://upload.example/0")).toEqual(Buffer.from("abcd"));
-    expect(uploadedParts.get("https://upload.example/1")).toEqual(Buffer.from("efgh"));
-    expect(uploadedParts.get("https://upload.example/2")).toEqual(Buffer.from("ij"));
+    expect(uploadedParts.get("https://upload.example/0")).toEqual({ bytes: Buffer.from("abcd"), contentLength: "4" });
+    expect(uploadedParts.get("https://upload.example/1")).toEqual({ bytes: Buffer.from("efgh"), contentLength: "4" });
+    expect(uploadedParts.get("https://upload.example/2")).toEqual({ bytes: Buffer.from("ij"), contentLength: "2" });
     const finishRequests = requests.filter((entry) => entry.path.endsWith("/upload_part_finish"));
     expect(finishRequests).toHaveLength(3);
     expect(finishRequests.map((entry) => {
       const payload = entry.payload as { part_index: number; md5: string };
       return { part_index: payload.part_index, md5: payload.md5 };
     }).sort((left, right) => left.part_index - right.part_index)).toEqual([
-      { part_index: 0, md5: createHash("md5").update("abcd").digest("hex") },
-      { part_index: 1, md5: createHash("md5").update("efgh").digest("hex") },
-      { part_index: 2, md5: createHash("md5").update("ij").digest("hex") },
+      { part_index: firstPartIndex, md5: createHash("md5").update("abcd").digest("hex") },
+      { part_index: firstPartIndex + 1, md5: createHash("md5").update("efgh").digest("hex") },
+      { part_index: firstPartIndex + 2, md5: createHash("md5").update("ij").digest("hex") },
     ]);
     expect(requests.at(-1)?.path).toBe("/v2/groups/group-test-2026/files");
+  });
+
+  it("retries transient QQ media failures and formats permanent errors safely", async () => {
+    const bytes = Buffer.from("retry");
+    const tempPath = path.join(temporaryDirectory, "media-retry.bin");
+    fs.writeFileSync(tempPath, bytes);
+    let prepareAttempts = 0;
+    const transientError = Object.assign(new Error("QQ API request failed"), {
+      name: "QQApiError",
+      status: 500,
+      traceId: "trace-media-retry",
+      responseBody: { code: 40093001, message: "file upload channel unavailable" },
+    });
+    const client = {
+      request: async (requestPath: string) => {
+        if (requestPath.endsWith("/upload_prepare")) {
+          prepareAttempts += 1;
+          if (prepareAttempts === 1) throw transientError;
+          return {
+            body: {
+              upload_id: "upload-retry-test",
+              block_size: String(bytes.length),
+              parts: [{ index: 1, presigned_url: "https://upload.example/retry", block_size: String(bytes.length) }],
+              upload_config: { concurrency: 1, retry_timeout: 5, retry_delay: 1 },
+            },
+            traceId: null,
+          };
+        }
+        if (requestPath.endsWith("/files")) return { body: { file_info: "file-info-retry" }, traceId: "trace-retry-success" };
+        return { body: {}, traceId: null };
+      },
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      for await (const _chunk of init?.body as unknown as NodeJS.ReadableStream) void _chunk;
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+    try {
+      await expect(qqMediaModule.uploadQQMedia(client as unknown as import("@/lib/qq-api").QQBotApiClient, {
+        tempPath,
+        fileName: "retry.bin",
+        fileSize: bytes.length,
+        fileType: 4,
+        targetType: "group",
+        targetOpenid: "group-retry-test",
+        srvSendMsg: false,
+        md5: createHash("md5").update(bytes).digest("hex"),
+        sha1: createHash("sha1").update(bytes).digest("hex"),
+        md5First10m: createHash("md5").update(bytes).digest("hex"),
+      })).resolves.toMatchObject({ body: { file_info: "file-info-retry" } });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(prepareAttempts).toBe(2);
+
+    const permanentError = new qqApiModule.QQApiError("QQ API request failed", 500, "trace-format", { code: 850019, message: "unsupported file format" });
+    expect(qqMediaModule.describeQQMediaApiError(permanentError, "prepare")).toEqual({
+      message: "富媒体预上传准备失败",
+      code: "850019",
+      stage: "prepare",
+      detail: "文件格式与所选媒体类型不匹配",
+      traceId: "trace-format",
+    });
+    let permanentAttempts = 0;
+    const permanentClient = {
+      request: async () => {
+        permanentAttempts += 1;
+        throw permanentError;
+      },
+    };
+    await expect(qqMediaModule.uploadQQMedia(permanentClient as unknown as import("@/lib/qq-api").QQBotApiClient, {
+      tempPath,
+      fileName: "retry.bin",
+      fileSize: bytes.length,
+      fileType: 4,
+      targetType: "group",
+      targetOpenid: "group-retry-test",
+      srvSendMsg: false,
+      md5: createHash("md5").update(bytes).digest("hex"),
+      sha1: createHash("sha1").update(bytes).digest("hex"),
+      md5First10m: createHash("md5").update(bytes).digest("hex"),
+    })).rejects.toMatchObject({ name: "QQMediaUploadError", stage: "prepare", mediaCause: permanentError });
+    expect(permanentAttempts).toBe(1);
   });
 });

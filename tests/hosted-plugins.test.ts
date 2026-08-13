@@ -19,6 +19,7 @@ function pluginPackage(input: {
   id?: string;
   version?: string;
   permissions?: string[];
+  events?: string[];
   code?: string;
   configSchema?: unknown[];
 }) {
@@ -32,7 +33,7 @@ function pluginPackage(input: {
     category: "开发测试",
     tags: ["测试"],
     entry: "index.js",
-    events: ["C2C_MESSAGE_CREATE"],
+    events: input.events || ["C2C_MESSAGE_CREATE"],
     permissions: input.permissions || ["storage:kv", "log:write"],
     commands: [{ name: "计数", description: "累计收到的消息事件" }],
     configSchema: input.configSchema || [{ key: "step", label: "步长", type: "number", required: true, default: 1, min: 1, max: 10 }],
@@ -87,6 +88,11 @@ describe("hosted plugin packages", () => {
     expect(() => packageModule.parseHostedPluginPackage(oversized)).toThrow("PLUGIN_PACKAGE_FILE_TOO_LARGE");
     expect(() => packageModule.parseHostedPluginPackage(strToU8("not-a-zip"))).toThrow("PLUGIN_PACKAGE_INVALID");
   });
+
+  it("accepts the wildcard event subscription", () => {
+    const parsed = packageModule.parseHostedPluginPackage(pluginPackage({ events: ["*"] }));
+    expect(parsed.manifest.events).toEqual(["*"]);
+  });
 });
 
 describe("hosted plugin runtime", () => {
@@ -130,6 +136,177 @@ describe("hosted plugin runtime", () => {
       kv,
     });
     expect(status.actions[0]).toMatchObject({ kind: "reply", format: "text", content: expect.stringContaining("累计签到 1 天") });
+  });
+
+  it("runs the group moderation example with role and mention enforcement", async () => {
+    const code = fs.readFileSync(path.resolve(import.meta.dirname, "../examples/group-moderation-plugin/index.js"), "utf8");
+    const config = {
+      muteCommand: "/禁言",
+      unmuteCommand: "/解禁",
+      statusCommand: "/禁言状态",
+      defaultDurationMinutes: 10,
+      maxDurationMinutes: 1440,
+      allowGroupAdmins: true,
+    };
+    const event = {
+      type: "GROUP_AT_MESSAGE_CREATE",
+      data: {
+        content: "/禁言 30s",
+        group_openid: "group-openid",
+        author: { member_openid: "admin-openid", member_role: "admin" },
+        mentions: [{ member_openid: "member-openid", member_role: "member", username: "测试成员", bot: false }],
+      },
+    };
+    const requests: Array<{ method: string; path: string; body: unknown }> = [];
+    const muted = await runtimeModule.executeHostedPlugin({
+      code,
+      event,
+      config,
+      kv: {},
+      qqRequest: async (method, requestPath, body) => {
+        requests.push({ method, path: requestPath, body });
+        return { body: {}, traceId: "trace-mute" };
+      },
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ method: "POST", path: "/v2/groups/group-openid/restrict_chat_setting" });
+    const muteBody = requests[0].body as { members: Array<{ op: string; member_openid: string; mute_expire_at: string }> };
+    expect(muteBody.members[0]).toMatchObject({ op: "add", member_openid: "member-openid" });
+    expect(Date.parse(muteBody.members[0].mute_expire_at)).toBeGreaterThan(Date.now() + 20_000);
+    expect(muted.actions).toContainEqual({ kind: "reply", format: "text", content: "已禁言 测试成员 30 秒。" });
+
+    const denied = await runtimeModule.executeHostedPlugin({
+      code,
+      event: { ...event, data: { ...event.data, author: { member_openid: "regular-openid", member_role: "member" } } },
+      config,
+      kv: {},
+      qqRequest: async () => { throw new Error("NETWORK_MUST_NOT_RUN"); },
+    });
+    expect(denied.qqRequestCount).toBe(0);
+    expect(denied.actions).toEqual([{ kind: "reply", format: "text", content: "仅群主或已获授权的群管理员可以执行该命令。" }]);
+
+    const protectedTarget = await runtimeModule.executeHostedPlugin({
+      code,
+      event: { ...event, data: { ...event.data, mentions: [{ member_openid: "owner-openid", member_role: "owner", username: "群主" }] } },
+      config,
+      kv: {},
+      qqRequest: async () => { throw new Error("NETWORK_MUST_NOT_RUN"); },
+    });
+    expect(protectedTarget.qqRequestCount).toBe(0);
+    expect(protectedTarget.actions).toEqual([{ kind: "reply", format: "text", content: "只能操作普通群成员，不能操作群主、管理员或机器人。" }]);
+
+    requests.length = 0;
+    const unmuted = await runtimeModule.executeHostedPlugin({
+      code,
+      event: { ...event, data: { ...event.data, content: "/解禁" } },
+      config,
+      kv: {},
+      qqRequest: async (method, requestPath, body) => {
+        requests.push({ method, path: requestPath, body });
+        return { body: {}, traceId: "trace-unmute" };
+      },
+    });
+    expect(requests[0]).toEqual({
+      method: "POST",
+      path: "/v2/groups/group-openid/restrict_chat_setting",
+      body: { members: [{ op: "del", member_openid: "member-openid", mute_expire_at: "" }] },
+    });
+    expect(unmuted.actions).toContainEqual({ kind: "reply", format: "text", content: "已解除 测试成员 的禁言。" });
+
+    requests.length = 0;
+    const status = await runtimeModule.executeHostedPlugin({
+      code,
+      event: { ...event, data: { ...event.data, content: "/禁言状态", mentions: [] } },
+      config,
+      kv: {},
+      qqRequest: async (method, requestPath, body) => {
+        requests.push({ method, path: requestPath, body });
+        return { body: { members: [{ member_openid: "muted-member" }] }, traceId: "trace-status" };
+      },
+    });
+    expect(requests).toEqual([{ method: "GET", path: "/v2/groups/group-openid/restrict_chat_setting", body: undefined }]);
+    expect(status.actions).toContainEqual({ kind: "reply", format: "text", content: "当前群有 1 名成员处于禁言状态。" });
+
+    const invalidDuration = await runtimeModule.executeHostedPlugin({
+      code,
+      event: { ...event, data: { ...event.data, content: "/禁言 很久" } },
+      config,
+      kv: {},
+      qqRequest: async () => { throw new Error("NETWORK_MUST_NOT_RUN"); },
+    });
+    expect(invalidDuration.qqRequestCount).toBe(0);
+    expect(invalidDuration.actions).toEqual([{ kind: "reply", format: "text", content: "禁言时长格式无效，请使用 30s、10m、2h 或 1d。" }]);
+  });
+
+  it("lets async plugins consume QQ OpenAPI responses", async () => {
+    const requests: Array<{ method: string; path: string; body: unknown }> = [];
+    const result = await runtimeModule.executeHostedPlugin({
+      code: `StarBot.definePlugin({ async onEvent(event, sdk) {
+        const profile = await sdk.qq.getBotProfile();
+        const groups = await sdk.qq.callEndpoint("listBotGuilds", {}, undefined, { limit: 10 });
+        sdk.reply.text(profile.body.username + ":" + groups.body.length + ":" + profile.traceId);
+      }});`,
+      event: { type: "C2C_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      qqRequest: async (method, path, body) => {
+        requests.push({ method, path, body });
+        return path === "/users/@me"
+          ? { body: { username: "异步测试机器人" }, traceId: "trace-profile" }
+          : { body: [{ id: "guild-1" }], traceId: "trace-guilds" };
+      },
+    });
+
+    expect(requests).toEqual([
+      { method: "GET", path: "/users/@me", body: undefined },
+      { method: "GET", path: "/users/@me/guilds?limit=10", body: undefined },
+    ]);
+    expect(result.qqRequestCount).toBe(2);
+    expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "异步测试机器人:1:trace-profile" }]);
+  });
+
+  it("lets plugins handle observed QQ errors and rejects unobserved failures", async () => {
+    const qqRequest = async () => { throw new Error("QQ_WRITE_DENIED"); };
+    const handled = await runtimeModule.executeHostedPlugin({
+      code: `StarBot.definePlugin({ async onEvent(event, sdk) {
+        try { await sdk.qq.getBotProfile(); }
+        catch (error) { sdk.reply.text(error.message); }
+      }});`,
+      event: { type: "C2C_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      qqRequest,
+    });
+    expect(handled.actions).toEqual([{ kind: "reply", format: "text", content: "QQ_WRITE_DENIED" }]);
+
+    await expect(runtimeModule.executeHostedPlugin({
+      code: "StarBot.definePlugin({ onEvent(event, sdk) { sdk.qq.getBotProfile(); } });",
+      event: { type: "C2C_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      qqRequest,
+    })).rejects.toThrow("QQ_WRITE_DENIED");
+
+    await expect(runtimeModule.executeHostedPlugin({
+      code: "StarBot.definePlugin({ async onEvent(event, sdk) { sdk.qq.getBotProfile(); } });",
+      event: { type: "C2C_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      qqRequest,
+    })).rejects.toThrow("QQ_WRITE_DENIED");
+  });
+
+  it("interrupts CPU-bound continuations after QQ responses", async () => {
+    const startedAt = Date.now();
+    await expect(runtimeModule.executeHostedPlugin({
+      code: "StarBot.definePlugin({ async onEvent(event, sdk) { await sdk.qq.getBotProfile(); while (true) {} } });",
+      event: { type: "C2C_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      qqRequest: async () => ({ body: { username: "test" }, traceId: "trace" }),
+    })).rejects.toThrow("PLUGIN_EXECUTION_TIMEOUT");
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 });
 
@@ -188,5 +365,25 @@ describe("hosted plugin lifecycle", () => {
       .toEqual({ enabled: 0, failure_count: 5, last_error: "PLUGIN_PERMISSION_DENIED:storage:kv" });
     expect(databaseModule.getDatabase().prepare("SELECT COUNT(*) AS count FROM plugin_kv WHERE installation_id = ?").get(installed.installationId))
       .toEqual({ count: 0 });
+  });
+
+  it("dispatches every received event to wildcard plugins", async () => {
+    const user = sessionModule.authenticate("plugin-author@example.com", "strong-password");
+    expect(user).not.toBeNull();
+    const bot = databaseModule.getDatabase().prepare("SELECT id FROM bots WHERE user_id = ? LIMIT 1").get(user!.id) as { id: string };
+    const imported = await serviceModule.importPluginPackage(user!, pluginPackage({
+      id: "wildcard-events",
+      events: ["*"],
+      permissions: ["storage:kv"],
+      code: "StarBot.definePlugin({ onEvent(event, sdk) { sdk.kv.set('lastEvent', event.type); } });",
+      configSchema: [],
+    }));
+    const installed = serviceModule.installPlugin(user!, { projectId: imported.projectId, botId: bot.id });
+    serviceModule.updatePluginInstallation(user!, installed.installationId, { enabled: true });
+
+    await expect(serviceModule.dispatchHostedPlugins(bot.id, "INTERACTION_CREATE", { id: "interaction-1" }))
+      .resolves.toEqual({ executed: 1, stopped: false });
+    expect(databaseModule.getDatabase().prepare("SELECT value_json FROM plugin_kv WHERE installation_id = ? AND key = 'lastEvent'").get(installed.installationId))
+      .toEqual({ value_json: '"INTERACTION_CREATE"' });
   });
 });

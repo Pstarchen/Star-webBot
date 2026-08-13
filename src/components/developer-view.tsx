@@ -26,17 +26,19 @@ import { Input, Textarea } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { QQ_OPENAPI_ENDPOINTS, type QQOpenApiEndpointId } from "@/lib/qq-openapi-catalog";
 import { cn } from "@/lib/utils";
 import type { Bot } from "@/types/platform";
 
 const pluginCode = `StarBot.definePlugin({
-  onEvent(event, sdk) {
+  async onEvent(event, sdk) {
     const content = String(event.data?.content || "").trim();
     if (content !== sdk.config.keyword) return;
 
+    const profile = await sdk.qq.getBotProfile();
     const count = sdk.kv.get("triggerCount", 0) + 1;
     sdk.kv.set("triggerCount", count);
-    sdk.reply.text(\`${"${sdk.config.reply}"}\\n已触发 ${"${count}"} 次。\`);
+    sdk.reply.text(\`${"${profile.body.username}"}：${"${sdk.config.reply}"}\\n已触发 ${"${count}"} 次。\`);
     sdk.log.info("keyword matched", { count });
   },
 });`;
@@ -52,7 +54,7 @@ const manifestCode = `{
   "tags": ["自动回复"],
   "entry": "index.js",
   "events": ["C2C_MESSAGE_CREATE"],
-  "permissions": ["reply:text", "storage:kv", "log:write"],
+  "permissions": ["reply:text", "qq:api", "storage:kv", "log:write"],
   "configSchema": [
     { "key": "keyword", "label": "关键词", "type": "text", "required": true, "default": "你好" },
     { "key": "reply", "label": "回复内容", "type": "text", "required": true, "default": "你好，消息已收到。" }
@@ -60,21 +62,37 @@ const manifestCode = `{
 }`;
 
 const workflow = [
-  ["01", "编写", "用 StarBot.definePlugin 注册同步事件处理器"],
+  ["01", "编写", "注册事件处理器并按需等待 QQ OpenAPI"],
   ["02", "构建", "运行 SDK 构建命令生成可校验 ZIP"],
   ["03", "安装", "导入插件中心并绑定机器人后启用"],
 ];
 
+function readableErrorDetail(value: unknown) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  if (!value || typeof value !== "object") return "";
+  const detail = value as Record<string, unknown>;
+  const code = typeof detail.code === "string" || typeof detail.code === "number" ? `错误码 ${detail.code}` : "";
+  const message = typeof detail.message === "string" ? detail.message : typeof detail.msg === "string" ? detail.msg : "";
+  return [code, message].filter(Boolean).join(" · ");
+}
+
 const capabilities = [
   [MessageSquareReply, "回复消息", "文本、Markdown、Ark 与键盘"],
   [Database, "保存状态", "按安装实例隔离的 KV 存储"],
-  [Code2, "调用 QQ API", "经权限校验后由平台代发请求"],
+  [Code2, "调用 QQ API", "34 个官方端点与通用请求均返回响应"],
   [ShieldCheck, "隔离执行", "QuickJS 沙箱、超时和动作数量限制"],
+];
+
+const officialEndpointOptions = [
+  { value: "custom", label: "自定义相对路径" },
+  ...Object.entries(QQ_OPENAPI_ENDPOINTS).map(([id, endpoint]) => ({ value: id, label: `${endpoint.method} · ${endpoint.title}` })),
 ];
 
 export function DeveloperView({ bots }: { bots: Bot[] }) {
   const [copied, setCopied] = useState<"code" | "manifest" | "">("");
   const [botId, setBotId] = useState(bots[0]?.id || "");
+  const [sendMode, setSendMode] = useState<"reply" | "proactive">("reply");
   const [targetType, setTargetType] = useState<"c2c" | "group">("c2c");
   const [targetOpenid, setTargetOpenid] = useState("");
   const [content, setContent] = useState("你好，这是一条来自 StarBot 调试台的消息。");
@@ -83,6 +101,7 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
   const [sending, setSending] = useState(false);
   const [apiMethod, setApiMethod] = useState<"GET" | "POST" | "PUT" | "PATCH" | "DELETE">("GET");
   const [apiPath, setApiPath] = useState("/gateway/bot");
+  const [apiEndpointId, setApiEndpointId] = useState("custom");
   const [apiBody, setApiBody] = useState("{}");
   const [apiResult, setApiResult] = useState<unknown>(null);
   const [apiError, setApiError] = useState("");
@@ -95,6 +114,14 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
   const [mediaSending, setMediaSending] = useState(false);
   const [mediaError, setMediaError] = useState("");
   const [mediaResult, setMediaResult] = useState<unknown>(null);
+
+  function selectOfficialEndpoint(value: string) {
+    setApiEndpointId(value);
+    if (value === "custom") return;
+    const endpoint = QQ_OPENAPI_ENDPOINTS[value as QQOpenApiEndpointId];
+    setApiMethod(endpoint.method);
+    setApiPath(endpoint.path);
+  }
   async function copySnippet(kind: "code" | "manifest", value: string) {
     await navigator.clipboard.writeText(value);
     setCopied(kind);
@@ -112,12 +139,13 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
       const response = await fetch("/api/bots/" + botId + "/message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetType, targetOpenid, content }),
+        body: JSON.stringify({ sendMode, targetType, targetOpenid, content }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const failure = body as { message?: string; traceId?: string };
-        throw new Error((failure.message || "发送失败") + (failure.traceId ? " · Trace " + failure.traceId : ""));
+        const failure = body as { message?: string; code?: string; traceId?: string };
+        const metadata = [failure.code ? `错误码 ${failure.code}` : "", failure.traceId ? `Trace ${failure.traceId}` : ""].filter(Boolean).join(" · ");
+        throw new Error((failure.message || "发送失败") + (metadata ? `\n${metadata}` : ""));
       }
       setResult(body);
     } catch (requestError) {
@@ -134,7 +162,7 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
     setApiError("");
     setApiResult(null);
     try {
-      const body = apiMethod === "GET" || apiMethod === "DELETE" ? undefined : JSON.parse(apiBody);
+      const body = apiMethod === "GET" ? undefined : JSON.parse(apiBody);
       const response = await fetch("/api/bots/" + botId + "/openapi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -166,8 +194,13 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
       const response = await fetch("/api/bots/" + botId + "/media", { method: "POST", body: formData });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const failure = body as { message?: string; traceId?: string; detail?: string };
-        throw new Error([failure.message, failure.detail, failure.traceId ? "Trace " + failure.traceId : ""].filter(Boolean).join(" · ") || "富媒体上传失败");
+        const failure = body as { message?: string; code?: string | number; traceId?: string; detail?: unknown };
+        throw new Error([
+          failure.message,
+          failure.code !== undefined && failure.code !== null ? `错误码 ${failure.code}` : "",
+          readableErrorDetail(failure.detail),
+          failure.traceId ? "Trace " + failure.traceId : "",
+        ].filter(Boolean).join(" · ") || "富媒体上传失败");
       }
       setMediaResult(body);
     } catch (requestError) {
@@ -270,7 +303,7 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
           <CardHeader className="flex-row items-start justify-between">
             <div>
               <CardTitle>消息调试</CardTitle>
-              <CardDescription>请求由服务端转发并写入事件日志</CardDescription>
+              <CardDescription>默认复用最近收到的消息上下文，避免误走主动消息权限</CardDescription>
             </div>
             <Badge variant="success">OpenAPI</Badge>
           </CardHeader>
@@ -287,12 +320,24 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
                 />
               </label>
               <label className="block">
+                <span className="field-label">发送模式</span>
+                <Select
+                  value={sendMode}
+                  onValueChange={(value) => setSendMode(value as "reply" | "proactive")}
+                  options={[{ value: "reply", label: "回复最近事件" }, { value: "proactive", label: "主动发送" }]}
+                  ariaLabel="选择发送模式"
+                />
+                <span className="mt-1.5 block text-[11px] leading-5 text-muted-foreground">
+                  {sendMode === "reply" ? "群聊使用 5 分钟内、单聊使用 60 分钟内的最近消息。" : "需要机器人已获得 QQ 主动消息权限。"}
+                </span>
+              </label>
+              <label className="block">
                 <span className="field-label">消息场景</span>
                 <Select value={targetType} onValueChange={(value) => setTargetType(value as "c2c" | "group")} options={[{ value: "c2c", label: "单聊用户" }, { value: "group", label: "群聊" }]} ariaLabel="选择消息场景" />
               </label>
               <label className="block"><span className="field-label">目标 OpenID</span><Input value={targetOpenid} onChange={(event) => setTargetOpenid(event.target.value)} className="mono-data text-xs" required /></label>
               <label className="block"><span className="field-label">消息内容</span><Textarea value={content} onChange={(event) => setContent(event.target.value)} className="resize-none text-xs" required /></label>
-              {error && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">{error}</div>}
+              {error && <div className="whitespace-pre-line rounded-md border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-700">{error}</div>}
               <Button type="submit" disabled={sending || !bots.length} className="w-full"><Play size={14} />{sending ? "正在发送..." : "调用 QQ 消息接口"}</Button>
             </form>
 
@@ -311,9 +356,10 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
           </CardHeader>
           <CardContent>
             <form onSubmit={callOpenApi} className="grid gap-4 lg:grid-cols-[130px_minmax(0,1fr)]">
+              <label className="block lg:col-span-2"><span className="field-label">官方端点</span><Select value={apiEndpointId} onValueChange={selectOfficialEndpoint} options={officialEndpointOptions} ariaLabel="选择 QQ 官方端点" /></label>
               <label className="block"><span className="field-label">HTTP 方法</span><Select value={apiMethod} onValueChange={(value) => setApiMethod(value as typeof apiMethod)} options={["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => ({ value: method, label: method }))} ariaLabel="选择 HTTP 方法" className="mono-data" /></label>
-              <label className="block"><span className="field-label">官方 API 相对路径</span><Input value={apiPath} onChange={(event) => setApiPath(event.target.value)} className="mono-data text-xs" placeholder="/v2/users/{openid}/messages" required /></label>
-              <label className="block lg:col-span-2"><span className="field-label">JSON 请求体</span><Textarea value={apiBody} onChange={(event) => setApiBody(event.target.value)} disabled={apiMethod === "GET" || apiMethod === "DELETE"} className="mono-data min-h-36 resize-y text-xs" /></label>
+              <label className="block"><span className="field-label">官方 API 相对路径</span><Input value={apiPath} onChange={(event) => { setApiPath(event.target.value); setApiEndpointId("custom"); }} className="mono-data text-xs" placeholder="/v2/users/{openid}/messages" required /></label>
+              <label className="block lg:col-span-2"><span className="field-label">JSON 请求体</span><Textarea value={apiBody} onChange={(event) => setApiBody(event.target.value)} disabled={apiMethod === "GET"} className="mono-data min-h-36 resize-y text-xs" /></label>
               {apiError && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 lg:col-span-2">{apiError}</div>}
               <div className="lg:col-span-2"><Button type="submit" disabled={apiSending || !bots.length}><Play size={14} />{apiSending ? "正在请求..." : "发送 OpenAPI 请求"}</Button></div>
             </form>

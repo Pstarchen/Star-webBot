@@ -83,14 +83,12 @@ function AddBotDialog({
   used: number;
   quota: number;
   onCreate: (input: {
-    name: string;
     appId: string;
     clientSecret: string;
     environment: "production" | "sandbox";
     connectionMode: "websocket" | "webhook";
   }) => Promise<Bot>;
 }) {
-  const [name, setName] = useState("");
   const [appId, setAppId] = useState("");
   const [secret, setSecret] = useState("");
   const [environment, setEnvironment] = useState<"production" | "sandbox">("sandbox");
@@ -101,18 +99,16 @@ function AddBotDialog({
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (quotaReached || !name.trim() || !appId.trim() || !secret.trim()) return;
+    if (quotaReached || !appId.trim() || !secret.trim()) return;
     setSubmitting(true);
     setError("");
     try {
       await onCreate({
-        name: name.trim(),
         appId: appId.trim(),
         clientSecret: secret,
         environment,
         connectionMode,
       });
-      setName("");
       setAppId("");
       setSecret("");
       setEnvironment("sandbox");
@@ -134,7 +130,7 @@ function AddBotDialog({
             <div className="min-w-0">
               <Dialog.Title className="text-lg font-semibold text-foreground">添加 QQ 机器人</Dialog.Title>
               <Dialog.Description className="mt-1.5 text-sm leading-6 text-muted-foreground">
-                填写 QQ 开放平台的应用凭据，提交后由服务端验证并加密保存。
+                填写 QQ 开放平台的应用凭据，验证成功后自动读取机器人名称并加密保存凭据。
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>
@@ -160,10 +156,6 @@ function AddBotDialog({
             </div>
           ) : (
             <form onSubmit={submit} className="mt-5 space-y-4">
-              <label className="block">
-                <span className="field-label">机器人名称</span>
-                <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：星野助手" required />
-              </label>
               <label className="block">
                 <span className="field-label">AppID</span>
                 <Input value={appId} onChange={(event) => setAppId(event.target.value)} className="mono-data text-xs" placeholder="QQ 开放平台 AppID" required />
