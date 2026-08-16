@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { beginDatabaseInstallation, type DatabaseInstallationHandle } from "@/lib/database";
-import { installationDatabaseErrorMessage, installationDatabaseSchema, toDatabaseConfigurationInput } from "@/lib/install-database-schema";
+import { installationDatabaseErrorCode, installationDatabaseErrorMessage, installationDatabaseSchema, toDatabaseConfigurationInput } from "@/lib/install-database-schema";
 import { assertTrustedRequest, requestUsesHttps } from "@/lib/security";
 import { createSessionToken, sessionCookieName, sessionMaxAgeSeconds } from "@/lib/session";
 import { completeInstallation } from "@/lib/system-settings-service";
@@ -61,8 +61,7 @@ export async function POST(request: Request) {
   } catch (error) {
     databaseInstallation?.rollback();
     const code = error instanceof Error ? error.message : "";
-    const databaseErrorCode = code.match(/\b(?:ER|MYSQL|DATABASE)_[A-Z0-9_]+\b/)?.[0] || "UNKNOWN";
-    console.error("Database installation failed", { code: databaseErrorCode });
+    console.error("Database installation failed", { code: installationDatabaseErrorCode(error) });
     if (code === "INSTALL_ALREADY_COMPLETED") return NextResponse.json({ message: "系统已完成初始化" }, { status: 409 });
     if (code === "INSTALL_ASSET_INVALID") return NextResponse.json({ message: "站点图片格式不支持" }, { status: 400 });
     if (code === "INSTALL_ASSET_TOO_LARGE") return NextResponse.json({ message: "站点图片不能超过 512KB" }, { status: 400 });

@@ -10,7 +10,55 @@ permissions:
   contents: write
 
 jobs:
+  mysql-compatibility:
+    name: MySQL ${{ matrix.mysql-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql-version: ["5.7", "8.0", "8.4"]
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql-version }}
+        env:
+          MYSQL_ROOT_PASSWORD: test-root-password
+          MYSQL_DATABASE: starbot_test
+          MYSQL_USER: starbot_test
+          MYSQL_PASSWORD: test-database-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot -ptest-root-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+    env:
+      MYSQL_TEST_DATABASE: "true"
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: 3306
+      MYSQL_USER: starbot_test
+      MYSQL_PASSWORD: test-database-password
+      MYSQL_DATABASE: starbot_test
+      MYSQL_SSL: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run MySQL adapter tests
+        run: npm test -- tests/mysql-adapter.test.ts
+
   build:
+    needs: mysql-compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

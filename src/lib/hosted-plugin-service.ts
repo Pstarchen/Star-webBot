@@ -462,7 +462,7 @@ export function removeMarketplacePlugin(user: SessionUser, projectId: string, re
   database.transaction(() => {
     disabledInstallations = database.prepare("UPDATE plugin_installations SET enabled = 0, updated_at = ? WHERE project_id = ? AND enabled = 1").run(now, projectId).changes;
     cancelledReviews = database.prepare(`
-      UPDATE plugin_market_reviews SET status = 'rejected', review_note = ?, reviewed_by = ?, reviewed_at = ?
+      UPDATE plugin_market_reviews SET status = 'rejected', pending_project_id = NULL, review_note = ?, reviewed_by = ?, reviewed_at = ?
       WHERE project_id = ? AND status = 'pending'
     `).run(reviewNote, user.id, now, projectId).changes;
     database.prepare("DELETE FROM plugin_market_listings WHERE project_id = ?").run(projectId);
@@ -487,9 +487,9 @@ export function requestPluginReview(user: SessionUser, projectId: string, versio
   const now = new Date().toISOString();
   database.transaction(() => {
     database.prepare(`
-      INSERT INTO plugin_market_reviews (id, project_id, version_id, requested_by, status, requested_at)
-      VALUES (?, ?, ?, ?, 'pending', ?)
-    `).run(id, projectId, version.id, user.id, now);
+      INSERT INTO plugin_market_reviews (id, project_id, version_id, requested_by, status, pending_project_id, requested_at)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?)
+    `).run(id, projectId, version.id, user.id, projectId, now);
     if (project.status !== "published") database.prepare("UPDATE plugin_projects SET status = 'pending', review_note = NULL, updated_at = ? WHERE id = ?").run(now, projectId);
   })();
   writeAuditLog(user.id, "hosted_plugin.review.request", "plugin_project", projectId, { reviewId: id, versionId: version.id });
@@ -504,7 +504,7 @@ export function reviewPlugin(user: SessionUser, reviewId: string, input: { appro
   const now = new Date().toISOString();
   database.transaction(() => {
     database.prepare(`
-      UPDATE plugin_market_reviews SET status = ?, review_note = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?
+      UPDATE plugin_market_reviews SET status = ?, pending_project_id = NULL, review_note = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?
     `).run(input.approved ? "approved" : "rejected", input.note?.trim() || null, user.id, now, reviewId);
     if (input.approved) {
       database.prepare(`

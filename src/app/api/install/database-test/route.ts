@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { testDatabaseConfiguration } from "@/lib/database";
-import { installationDatabaseErrorMessage, installationDatabaseSchema, toDatabaseConfigurationInput } from "@/lib/install-database-schema";
+import { installationDatabaseErrorCode, installationDatabaseErrorMessage, installationDatabaseSchema, toDatabaseConfigurationInput } from "@/lib/install-database-schema";
 import { RateLimitError, assertTrustedRequest, consumeRateLimit, rateLimitKey } from "@/lib/security";
 import { installationStatus } from "@/lib/system-settings-service";
 
@@ -23,6 +23,7 @@ export async function POST(request: Request) {
     const provider = testDatabaseConfiguration(toDatabaseConfigurationInput(parsed.data));
     return NextResponse.json({ provider, message: provider === "mysql" ? "MySQL 连接和表结构检查通过" : "SQLite 文件路径可用" });
   } catch (error) {
+    console.error("Database connection test failed", { code: installationDatabaseErrorCode(error) });
     return NextResponse.json({ message: installationDatabaseErrorMessage(error) }, { status: 400 });
   }
 }

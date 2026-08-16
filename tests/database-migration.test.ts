@@ -51,6 +51,10 @@ beforeAll(async () => {
       plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE, nonce_hash TEXT NOT NULL,
       expires_at INTEGER NOT NULL, PRIMARY KEY(plugin_id, nonce_hash)
     );
+    CREATE TABLE plugin_market_reviews (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_id TEXT NOT NULL, requested_by TEXT NOT NULL,
+      status TEXT NOT NULL, review_note TEXT, reviewed_by TEXT, requested_at TEXT NOT NULL, reviewed_at TEXT
+    );
   `);
   legacy.prepare("INSERT INTO users (id, name, email, password_hash, role, bot_quota, status, created_at) VALUES (?, 'Legacy User', 'legacy@example.com', 'hash', 'developer', 1, 'active', ?)").run(userId, now);
   legacy.prepare("INSERT INTO users (id, name, email, password_hash, role, bot_quota, status, created_at) VALUES ('legacy-admin', '?????', 'admin@starbot.local', 'hash', 'admin', 12, 'active', ?)").run(now);
@@ -65,6 +69,7 @@ beforeAll(async () => {
     VALUES (?, ?, ?, 'C2C_MESSAGE_CREATE', '{}', 'pending', 0, ?, ?, ?)
   `).run(deliveryId, pluginId, botId, now, now, now);
   legacy.prepare("INSERT INTO plugin_request_nonces (plugin_id, nonce_hash, expires_at) VALUES (?, 'legacy-nonce', ?)").run(pluginId, Date.now() + 60_000);
+  legacy.prepare("INSERT INTO plugin_market_reviews (id, project_id, version_id, requested_by, status, requested_at) VALUES ('legacy-review', 'legacy-project', 'legacy-version', ?, 'pending', ?)").run(userId, now);
   legacy.close();
 
   process.env.DATABASE_PATH = databasePath;
@@ -102,5 +107,12 @@ describe("SDK application schema migration", () => {
     expect(database.prepare("SELECT name FROM users WHERE email = 'admin@starbot.local'").get()).toEqual({ name: "系统管理员" });
     expect(database.prepare("SELECT name FROM users WHERE email = 'dev@starbot.local'").get()).toEqual({ name: "开发者" });
     expect(database.prepare("SELECT name FROM users WHERE email = 'legacy@example.com'").get()).toEqual({ name: "Legacy User" });
+  });
+
+  it("adds and backfills the portable pending review marker", () => {
+    const database = databaseModule.getDatabase();
+    const columns = database.prepare("PRAGMA table_info(plugin_market_reviews)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("pending_project_id");
+    expect(database.prepare("SELECT pending_project_id FROM plugin_market_reviews WHERE id = 'legacy-review'").get()).toEqual({ pending_project_id: "legacy-project" });
   });
 });

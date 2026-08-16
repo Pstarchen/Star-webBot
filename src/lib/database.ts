@@ -181,6 +181,7 @@ function migrateSqlite(database: Database.Database) {
       version_id TEXT NOT NULL REFERENCES plugin_versions(id) ON DELETE CASCADE,
       requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
+      pending_project_id TEXT,
       review_note TEXT,
       reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       requested_at TEXT NOT NULL,
@@ -411,6 +412,13 @@ function migrateSqlite(database: Database.Database) {
     );
   `);
 
+  const reviewColumns = database.prepare("PRAGMA table_info(plugin_market_reviews)").all() as Array<{ name: string }>;
+  if (!reviewColumns.some((column) => column.name === "pending_project_id")) {
+    database.exec("ALTER TABLE plugin_market_reviews ADD COLUMN pending_project_id TEXT");
+  }
+  database.prepare("UPDATE plugin_market_reviews SET pending_project_id = project_id WHERE status = 'pending' AND pending_project_id IS NULL").run();
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS plugin_market_reviews_pending_marker_idx ON plugin_market_reviews(pending_project_id)");
+
   const botColumns = database.prepare("PRAGMA table_info(bots)").all() as Array<{ name: string }>;
   if (!botColumns.some((column) => column.name === "auto_connect")) {
     database.exec("ALTER TABLE bots ADD COLUMN auto_connect INTEGER NOT NULL DEFAULT 0");
@@ -570,6 +578,29 @@ function migrateSqlite(database: Database.Database) {
 
 function migrateMySql(database: PlatformDatabase) {
   database.exec(MYSQL_SCHEMA);
+  const pendingReviewColumn = database.prepare(`
+    SELECT EXTRA AS extra FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'plugin_market_reviews' AND column_name = 'pending_project_id'
+  `).get() as { extra: string } | undefined;
+  if (pendingReviewColumn?.extra.toUpperCase().includes("GENERATED")) {
+    const generatedIndex = database.prepare(`
+      SELECT 1 AS found FROM information_schema.statistics
+      WHERE table_schema = DATABASE() AND table_name = 'plugin_market_reviews' AND index_name = 'plugin_market_reviews_pending_idx'
+      LIMIT 1
+    `).get();
+    if (generatedIndex) database.exec("ALTER TABLE plugin_market_reviews DROP INDEX plugin_market_reviews_pending_idx");
+    database.exec("ALTER TABLE plugin_market_reviews DROP COLUMN pending_project_id");
+    database.exec("ALTER TABLE plugin_market_reviews ADD COLUMN pending_project_id VARCHAR(191) NULL AFTER status");
+  } else if (!pendingReviewColumn) {
+    database.exec("ALTER TABLE plugin_market_reviews ADD COLUMN pending_project_id VARCHAR(191) NULL AFTER status");
+  }
+  database.prepare("UPDATE plugin_market_reviews SET pending_project_id = project_id WHERE status = 'pending' AND pending_project_id IS NULL").run();
+  const pendingReviewIndex = database.prepare(`
+    SELECT 1 AS found FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'plugin_market_reviews' AND index_name = 'plugin_market_reviews_pending_idx'
+    LIMIT 1
+  `).get();
+  if (!pendingReviewIndex) database.exec("CREATE UNIQUE INDEX plugin_market_reviews_pending_idx ON plugin_market_reviews(pending_project_id)");
   const now = new Date().toISOString();
   const insertPlan = database.prepare(`
     INSERT OR IGNORE INTO membership_plans

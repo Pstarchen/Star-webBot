@@ -14,6 +14,11 @@ export const installationDatabaseSchema = z.object({
 
 export type InstallationDatabaseValues = z.infer<typeof installationDatabaseSchema>;
 
+export function installationDatabaseErrorCode(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  return message.match(/\b(?:ER|MYSQL|DATABASE)_[A-Z0-9_]+\b/)?.[0] || "UNKNOWN";
+}
+
 export function toDatabaseConfigurationInput(input: InstallationDatabaseValues): DatabaseConfigurationInput {
   if (input.provider === "sqlite") return { provider: "sqlite", path: input.sqlitePath };
   return {
