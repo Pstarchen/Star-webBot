@@ -4,11 +4,12 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 function encryptionKey() {
   const configured = process.env.CREDENTIAL_ENCRYPTION_KEY;
   if (configured) {
+    if (/^[a-fA-F0-9]{64}$/.test(configured)) return Buffer.from(configured, "hex");
     const key = Buffer.from(configured, "base64");
-    if (key.length !== 32) throw new Error("CREDENTIAL_ENCRYPTION_KEY must decode to exactly 32 bytes");
+    if (key.length !== 32) throw new Error("CREDENTIAL_ENCRYPTION_KEY_INVALID");
     return key;
   }
-  if (process.env.NODE_ENV === "production") throw new Error("CREDENTIAL_ENCRYPTION_KEY is required in production");
+  if (process.env.NODE_ENV === "production") throw new Error("CREDENTIAL_ENCRYPTION_KEY_MISSING");
   return createHash("sha256").update(process.env.AUTH_SECRET || "starbot-local-development-vault").digest();
 }
 

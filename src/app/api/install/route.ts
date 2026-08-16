@@ -4,10 +4,10 @@ import { beginDatabaseInstallation, type DatabaseInstallationHandle } from "@/li
 import { installationDatabaseErrorCode, installationDatabaseErrorMessage, installationDatabaseSchema, toDatabaseConfigurationInput } from "@/lib/install-database-schema";
 import { assertTrustedRequest, requestUsesHttps } from "@/lib/security";
 import { createSessionToken, sessionCookieName, sessionMaxAgeSeconds } from "@/lib/session";
+import { SITE_ASSET_MAX_BYTES, SITE_ASSET_MAX_LABEL } from "@/lib/site-assets";
 import { completeInstallation } from "@/lib/system-settings-service";
 
-const MAX_ASSET_BYTES = 512 * 1024;
-const dataUrlSchema = z.string().startsWith("data:image/").max(MAX_ASSET_BYTES * 2).optional();
+const dataUrlSchema = z.string().startsWith("data:image/").max(SITE_ASSET_MAX_BYTES * 2).optional();
 
 const schema = z.object({
   siteName: z.string().trim().min(2).max(40),
@@ -26,7 +26,7 @@ function parseImageDataUrl(value?: string) {
   const match = /^data:(image\/(?:png|jpeg|webp|x-icon|vnd\.microsoft\.icon));base64,([a-zA-Z0-9+/=]+)$/.exec(value);
   if (!match) throw new Error("INSTALL_ASSET_INVALID");
   const bytes = Buffer.from(match[2], "base64");
-  if (bytes.length > MAX_ASSET_BYTES) throw new Error("INSTALL_ASSET_TOO_LARGE");
+  if (bytes.length > SITE_ASSET_MAX_BYTES) throw new Error("INSTALL_ASSET_TOO_LARGE");
   return { mimeType: match[1] === "image/vnd.microsoft.icon" ? "image/x-icon" : match[1], bytes };
 }
 
@@ -64,7 +64,7 @@ export async function POST(request: Request) {
     console.error("Database installation failed", { code: installationDatabaseErrorCode(error) });
     if (code === "INSTALL_ALREADY_COMPLETED") return NextResponse.json({ message: "系统已完成初始化" }, { status: 409 });
     if (code === "INSTALL_ASSET_INVALID") return NextResponse.json({ message: "站点图片格式不支持" }, { status: 400 });
-    if (code === "INSTALL_ASSET_TOO_LARGE") return NextResponse.json({ message: "站点图片不能超过 512KB" }, { status: 400 });
+    if (code === "INSTALL_ASSET_TOO_LARGE") return NextResponse.json({ message: `站点图片不能超过 ${SITE_ASSET_MAX_LABEL}` }, { status: 400 });
     if (code.includes("UNIQUE")) return NextResponse.json({ message: "管理员邮箱已存在" }, { status: 409 });
     return NextResponse.json({ message: installationDatabaseErrorMessage(error) }, { status: 500 });
   }

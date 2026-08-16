@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { FileArchive, UploadCloud, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -18,6 +18,7 @@ export function FilePicker({
   browseLabel = "选择文件",
   emptyLabel = "尚未选择文件",
   helperText,
+  maxBytes,
   disabled = false,
   className,
 }: {
@@ -27,13 +28,16 @@ export function FilePicker({
   browseLabel?: string;
   emptyLabel?: string;
   helperText?: string;
+  maxBytes?: number;
   disabled?: boolean;
   className?: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [validationError, setValidationError] = useState("");
 
   function clearFile() {
     if (inputRef.current) inputRef.current.value = "";
+    setValidationError("");
     onFileChange(null);
   }
 
@@ -45,7 +49,17 @@ export function FilePicker({
         accept={accept}
         className="sr-only"
         disabled={disabled}
-        onChange={(event) => onFileChange(event.target.files?.[0] || null)}
+        onChange={(event) => {
+          const nextFile = event.target.files?.[0] || null;
+          if (nextFile && maxBytes && nextFile.size > maxBytes) {
+            event.target.value = "";
+            setValidationError(`文件不能超过 ${formatFileSize(maxBytes)}`);
+            onFileChange(null);
+            return;
+          }
+          setValidationError("");
+          onFileChange(nextFile);
+        }}
         tabIndex={-1}
       />
       <div className="flex min-w-0 items-center gap-3">
@@ -56,8 +70,8 @@ export function FilePicker({
           <div className={cn("truncate text-xs font-medium", !file && "text-muted-foreground")} title={file?.name}>
             {file?.name || emptyLabel}
           </div>
-          <div className="mt-1 text-[11px] text-muted-foreground">
-            {file ? formatFileSize(file.size) : helperText}
+          <div className={cn("mt-1 text-[11px]", validationError ? "text-red-700" : "text-muted-foreground")}>
+            {validationError || (file ? formatFileSize(file.size) : helperText)}
           </div>
         </div>
         {file && (

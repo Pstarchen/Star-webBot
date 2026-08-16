@@ -16,7 +16,7 @@ export type InstallationDatabaseValues = z.infer<typeof installationDatabaseSche
 
 export function installationDatabaseErrorCode(error: unknown) {
   const message = error instanceof Error ? error.message : "";
-  return message.match(/\b(?:ER|MYSQL|DATABASE)_[A-Z0-9_]+\b/)?.[0] || "UNKNOWN";
+  return message.match(/\b(?:ER|MYSQL|DATABASE|CREDENTIAL)_[A-Z0-9_]+\b/)?.[0] || "UNKNOWN";
 }
 
 export function toDatabaseConfigurationInput(input: InstallationDatabaseValues): DatabaseConfigurationInput {
@@ -44,5 +44,6 @@ export function installationDatabaseErrorMessage(error: unknown) {
   if (code.includes("ER_TABLEACCESS_DENIED_ERROR") || code.includes("ER_COLUMNACCESS_DENIED_ERROR") || code.includes("ER_SPECIFIC_ACCESS_DENIED_ERROR")) return "MySQL 用户缺少建表或修改表结构的权限";
   if (code.includes("ER_PARSE_ERROR") || code.includes("ER_NOT_SUPPORTED_YET") || code.includes("ER_TOO_LONG_KEY")) return "当前 MySQL 版本与表结构不兼容，请联系管理员升级部署程序";
   if (code.includes("DATABASE_CONFIG_INVALID") || code.includes("DATABASE_PROVIDER_INVALID")) return "数据库启动配置无效，请检查环境变量或重新填写安装信息";
+  if (code.includes("CREDENTIAL_ENCRYPTION_KEY_INVALID") || code.includes("CREDENTIAL_ENCRYPTION_KEY_MISSING")) return "服务器凭据加密密钥配置无效，请联系管理员";
   return "数据库连接或初始化失败，请检查配置后重试";
 }

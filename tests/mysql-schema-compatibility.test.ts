@@ -31,5 +31,10 @@ describe("MySQL schema compatibility", () => {
     expect(installationDatabaseErrorMessage(new Error("ER_TOO_LONG_KEY: key is too long"))).toBe("当前 MySQL 版本与表结构不兼容，请联系管理员升级部署程序");
     expect(installationDatabaseErrorMessage(new Error("MYSQL_EXISTING_SCHEMA_INCOMPATIBLE"))).toBe("目标数据库中已有不兼容表结构，请使用空数据库或联系管理员迁移现有数据");
     expect(installationDatabaseErrorCode(new Error("ER_PARSE_ERROR: syntax error near password=secret"))).toBe("ER_PARSE_ERROR");
+    expect(installationDatabaseErrorCode(new Error("CREDENTIAL_ENCRYPTION_KEY_INVALID"))).toBe("CREDENTIAL_ENCRYPTION_KEY_INVALID");
+  });
+
+  it("reports invalid server encryption keys separately from database errors", () => {
+    expect(installationDatabaseErrorMessage(new Error("CREDENTIAL_ENCRYPTION_KEY_INVALID"))).toBe("服务器凭据加密密钥配置无效，请联系管理员");
   });
 });

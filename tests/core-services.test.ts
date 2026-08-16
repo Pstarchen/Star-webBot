@@ -69,6 +69,22 @@ afterAll(() => {
 });
 
 describe("authentication and membership", () => {
+  it("accepts Base64 and hexadecimal 32-byte credential encryption keys", () => {
+    const originalEncryptionKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    try {
+      for (const key of [Buffer.alloc(32, 17).toString("base64"), Buffer.alloc(32, 23).toString("hex")]) {
+        process.env.CREDENTIAL_ENCRYPTION_KEY = key;
+        const encrypted = cryptoModule.encryptSecret("credential-secret");
+        expect(cryptoModule.decryptSecret(encrypted)).toBe("credential-secret");
+      }
+      process.env.CREDENTIAL_ENCRYPTION_KEY = "invalid-key";
+      expect(() => cryptoModule.encryptSecret("credential-secret")).toThrow("CREDENTIAL_ENCRYPTION_KEY_INVALID");
+    } finally {
+      if (originalEncryptionKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = originalEncryptionKey;
+    }
+  });
+
   it("seeds memberships consistently with bootstrap quotas", () => {
     const admin = sessionModule.authenticate("admin@test.local", "admin-password-2026");
     expect(admin).toMatchObject({ role: "admin", botQuota: 12, membershipPlan: "pro", membershipName: "专业版" });

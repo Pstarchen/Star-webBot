@@ -36,7 +36,7 @@ npm run keygen
 
 ```env
 DATABASE_PATH=./data/starbot.db
-CREDENTIAL_ENCRYPTION_KEY=32字节Base64密钥
+CREDENTIAL_ENCRYPTION_KEY=32字节Base64密钥（也支持64位十六进制密钥）
 ```
 
 启动：
@@ -78,7 +78,7 @@ MYSQL_SSL=false
 - **会员支付**：支付开关、支付模式和渠道参数。
 - **套餐与订单**：免费/专业/团队套餐额度与月、季、年价格，以及人工订单到账审核。
 
-Logo 和 favicon 支持 PNG、JPEG、WebP，favicon 额外支持 ICO，单个文件最大 512KB。QQ App Secret 和支付密钥只加密保存在服务端，后台不会回显明文。
+Logo 和 favicon 支持 PNG、JPEG、WebP，favicon 额外支持 ICO，单个文件最大 5MB。QQ App Secret 和支付密钥只加密保存在服务端，后台不会回显明文。
 
 ## QQ 登录
 

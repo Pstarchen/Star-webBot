@@ -47,6 +47,8 @@ mysqlDescribe("MySQL database adapter", () => {
         adminName: "MySQL Admin",
         adminEmail: "mysql-admin@test.local",
         adminPassword: "mysql-admin-password",
+        logo: { mimeType: "image/png", bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
+        favicon: { mimeType: "image/x-icon", bytes: new Uint8Array([0x00, 0x00, 0x01, 0x00]) },
       });
       installation.commit();
     } catch (error) {
@@ -67,6 +69,12 @@ mysqlDescribe("MySQL database adapter", () => {
     const database = databaseModule.getDatabase();
     expect(database.prepare("SELECT 1 AS connected").get()).toEqual({ connected: 1 });
     expect(database.prepare("SELECT id FROM membership_plans ORDER BY id").all()).toEqual([{ id: "free" }, { id: "pro" }, { id: "team" }]);
+    expect(database.prepare("SELECT site_logo_mime, site_logo_blob, site_favicon_mime, site_favicon_blob FROM system_settings WHERE id = 1").get()).toEqual({
+      site_logo_mime: "image/png",
+      site_logo_blob: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      site_favicon_mime: "image/x-icon",
+      site_favicon_blob: Buffer.from([0x00, 0x00, 0x01, 0x00]),
+    });
     expect(sessionModule.authenticate("mysql-admin@test.local", "mysql-admin-password")).toMatchObject({ role: "admin", membershipPlan: "pro" });
   });
 

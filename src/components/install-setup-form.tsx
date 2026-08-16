@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { FilePicker } from "@/components/ui/file-picker";
 import { Input, Textarea } from "@/components/ui/input";
+import { SITE_ASSET_MAX_BYTES, SITE_ASSET_MAX_LABEL } from "@/lib/site-assets";
 import type { SitePublicSettings } from "@/types/platform";
 
 type DatabaseSetup = {
@@ -200,7 +201,7 @@ export function InstallSetupForm({ site, database }: { site: SitePublicSettings;
                 <CardTitle className="flex items-center gap-2"><FileImage size={15} />网站 Logo</CardTitle>
               </CardHeader>
               <CardContent>
-                <FilePicker file={logoFile} onFileChange={setLogoFile} accept="image/png,image/jpeg,image/webp" helperText="最大 512KB" browseLabel="选择图片" />
+                <FilePicker file={logoFile} onFileChange={setLogoFile} accept="image/png,image/jpeg,image/webp" helperText={`最大 ${SITE_ASSET_MAX_LABEL}`} maxBytes={SITE_ASSET_MAX_BYTES} browseLabel="选择图片" />
               </CardContent>
             </Card>
             <Card>
@@ -208,7 +209,7 @@ export function InstallSetupForm({ site, database }: { site: SitePublicSettings;
                 <CardTitle className="flex items-center gap-2"><FileImage size={15} />浏览器图标</CardTitle>
               </CardHeader>
               <CardContent>
-                <FilePicker file={faviconFile} onFileChange={setFaviconFile} accept="image/png,image/jpeg,image/webp,image/x-icon" helperText="最大 512KB" browseLabel="选择图标" />
+                <FilePicker file={faviconFile} onFileChange={setFaviconFile} accept="image/png,image/jpeg,image/webp,image/x-icon" helperText={`最大 ${SITE_ASSET_MAX_LABEL}`} maxBytes={SITE_ASSET_MAX_BYTES} browseLabel="选择图标" />
               </CardContent>
             </Card>
           </div>
