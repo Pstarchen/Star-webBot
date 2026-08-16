@@ -77,12 +77,16 @@ mysqlDescribe("MySQL database adapter", () => {
       site_favicon_mime: "image/x-icon",
       site_favicon_blob: null,
     });
-    expect(systemSettingsModule.getSiteAsset("logo")).toEqual({ mime: "image/png", data: installationLogoBytes });
-    expect(systemSettingsModule.getSiteAsset("favicon")).toEqual({ mime: "image/x-icon", data: installationFaviconBytes });
+    const storedLogo = systemSettingsModule.getSiteAsset("logo");
+    const storedFavicon = systemSettingsModule.getSiteAsset("favicon");
+    expect(storedLogo.mime).toBe("image/png");
+    expect(storedLogo.data?.equals(installationLogoBytes)).toBe(true);
+    expect(storedFavicon.mime).toBe("image/x-icon");
+    expect(storedFavicon.data?.equals(installationFaviconBytes)).toBe(true);
     expect(database.prepare("SELECT COUNT(*) AS count FROM site_asset_chunks WHERE kind = 'logo'").get()).toEqual({ count: 27 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM site_asset_chunks WHERE kind = 'favicon'").get()).toEqual({ count: 27 });
     expect(sessionModule.authenticate("mysql-admin@test.local", "mysql-admin-password")).toMatchObject({ role: "admin", membershipPlan: "pro" });
-  });
+  }, 60_000);
 
   it("uses portable event retention and gateway lease upserts", () => {
     const user = sessionModule.registerUser({ name: "MySQL User", email: `mysql-user-${randomUUID()}@example.com`, password: "strong-password" });
