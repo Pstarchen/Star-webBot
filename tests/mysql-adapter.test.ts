@@ -59,6 +59,7 @@ mysqlDescribe("MySQL database adapter", () => {
 
   it("recovers when a previous initialization stopped after creating users", () => {
     const database = databaseModule.getDatabase();
+    const usersBeforeRecovery = database.prepare("SELECT id, email FROM users ORDER BY id").all();
     const tables = database.prepare(`
       SELECT TABLE_NAME AS table_name FROM information_schema.tables
       WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
@@ -79,7 +80,7 @@ mysqlDescribe("MySQL database adapter", () => {
     delete state.__starbotDatabaseConfigurationKey;
 
     const recovered = databaseModule.getDatabase();
-    expect(recovered.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 2 });
+    expect(recovered.prepare("SELECT id, email FROM users ORDER BY id").all()).toEqual(usersBeforeRecovery);
     expect(recovered.prepare(`
       SELECT id FROM schema_migrations
       WHERE id IN ('20260812_sdk_application_schema', '20260813_system_settings_and_billing')
