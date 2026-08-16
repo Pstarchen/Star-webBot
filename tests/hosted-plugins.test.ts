@@ -101,6 +101,12 @@ describe("hosted plugin packages", () => {
 });
 
 describe("hosted plugin runtime", () => {
+  it("validates a plugin definition", async () => {
+    await expect(runtimeModule.validateHostedPluginCode(
+      "StarBot.definePlugin({ onEvent() {} });",
+    )).resolves.toBeUndefined();
+  });
+
   it("exposes only the structured SDK inside QuickJS", async () => {
     const result = await runtimeModule.executeHostedPlugin({
       code: `StarBot.definePlugin({ onEvent(event, sdk) {

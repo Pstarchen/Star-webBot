@@ -1,5 +1,5 @@
 import "server-only";
-import { getQuickJS, shouldInterruptAfterDeadline } from "quickjs-emscripten";
+import { getQuickJS } from "quickjs-emscripten";
 import { z } from "zod";
 import { QQ_OPENAPI_ENDPOINTS } from "@/lib/qq-openapi-catalog";
 import type { PluginHttpRequest } from "@/lib/plugin-http";
@@ -361,7 +361,7 @@ export async function validateHostedPluginCode(code: string) {
   const runtime = QuickJS.newRuntime();
   runtime.setMemoryLimit(16 * 1024 * 1024);
   runtime.setMaxStackSize(512 * 1024);
-  runtime.setInterruptHandler(shouldInterruptAfterDeadline(deadline));
+  runtime.setInterruptHandler(() => Date.now() >= deadline);
   const context = runtime.newContext();
   try {
     for (const [source, filename] of [[bootstrapCode, "starbot-sdk.js"], [`"use strict";\n${code}`, "plugin.js"]] as const) {
