@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import * as Tabs from "@radix-ui/react-tabs";
 import { Check, Clock3, CreditCard, Crown, LoaderCircle, ReceiptText, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,16 @@ type MembershipCenterData = {
   orders: MembershipOrder[];
   payment: { enabled: boolean; provider: PaymentProvider; manualInstructions: string };
 };
+
+class SessionExpiredError extends Error {}
+
+async function fetchMembershipCenter(signal?: AbortSignal) {
+  const response = await fetch("/api/membership", { cache: "no-store", credentials: "same-origin", signal });
+  const body = await response.json().catch(() => ({})) as MembershipCenterData & { message?: string };
+  if (response.status === 401) throw new SessionExpiredError("登录状态已失效");
+  if (!response.ok) throw new Error(body.message || "会员中心加载失败");
+  return body;
+}
 
 const cycleLabels: Record<BillingCycle, string> = { monthly: "月付", quarterly: "季付", yearly: "年付" };
 const orderLabels: Record<MembershipOrder["status"], string> = { pending: "待支付", paid: "已支付", cancelled: "已取消", expired: "已过期", failed: "支付失败" };
@@ -33,6 +44,7 @@ function cyclePrice(plan: MembershipPlan, cycle: BillingCycle) {
 }
 
 export function MembershipView({ user, onMembershipChange }: { user: SessionUser; onMembershipChange: (input: { plan: MembershipPlan; botQuota: number }) => void }) {
+  const router = useRouter();
   const [data, setData] = useState<MembershipCenterData | null>(null);
   const [cycle, setCycle] = useState<BillingCycle>("monthly");
   const [channel, setChannel] = useState<PaymentChannel>("alipay");
@@ -41,26 +53,28 @@ export function MembershipView({ user, onMembershipChange }: { user: SessionUser
   const paidPlans = useMemo(() => data?.plans.filter((plan) => plan.id !== "free") || [], [data]);
 
   async function load() {
-    const response = await fetch("/api/membership", { cache: "no-store" });
-    const body = await response.json().catch(() => ({})) as MembershipCenterData & { message?: string };
-    if (!response.ok) throw new Error(body.message || "会员中心加载失败");
-    setData(body);
+    try {
+      setData(await fetchMembershipCenter());
+    } catch (loadError) {
+      if (loadError instanceof SessionExpiredError) router.replace("/login?error=session_expired");
+      throw loadError;
+    }
   }
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/membership", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        const body = await response.json().catch(() => ({})) as MembershipCenterData & { message?: string };
-        if (!response.ok) throw new Error(body.message || "会员中心加载失败");
-        return body;
-      })
+    fetchMembershipCenter(controller.signal)
       .then(setData)
       .catch((loadError) => {
-        if (!controller.signal.aborted) setError(loadError instanceof Error ? loadError.message : "会员中心加载失败");
+        if (controller.signal.aborted) return;
+        if (loadError instanceof SessionExpiredError) {
+          router.replace("/login?error=session_expired");
+          return;
+        }
+        setError(loadError instanceof Error ? loadError.message : "会员中心加载失败");
       });
     return () => controller.abort();
-  }, []);
+  }, [router]);
 
   async function buy(plan: MembershipPlan) {
     setBusyPlan(plan.id);

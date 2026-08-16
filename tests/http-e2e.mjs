@@ -242,6 +242,15 @@ async function runAssertions() {
   assert.equal(JSON.stringify(emailSettings.body).includes("e2e-smtp-password"), false);
   results.push("administrator enables email verification without exposing SMTP secrets");
 
+  const registrationWithoutCode = await jsonResponse("/api/auth/register", {
+    method: "POST",
+    headers: originHeaders,
+    body: JSON.stringify({ name: "Unverified User", email: userEmail, password: userPassword }),
+  });
+  assert.equal(registrationWithoutCode.response.status, 400);
+  assert.match(registrationWithoutCode.body.message, /邮箱验证码/);
+  results.push("enabled registration verification rejects requests without an email code");
+
   const registerCodeRequest = await jsonResponse("/api/auth/email-code", {
     method: "POST",
     headers: originHeaders,
@@ -257,9 +266,10 @@ async function runAssertions() {
   assert.equal(registered.response.status, 201);
   assert.equal(registered.body.user.membershipPlan, "free");
   assert.equal(registered.body.user.botQuota, 1);
+  assert.doesNotMatch(registered.response.headers.get("set-cookie") || "", /;\s*Secure/i);
   const userId = registered.body.user.id;
   let userCookie = sessionCookie(registered.response);
-  results.push("email registration creates a free membership session");
+  results.push("HTTP registration creates a browser-compatible free membership session");
 
   const duplicateRegistration = await jsonResponse("/api/auth/email-code", {
     method: "POST",
@@ -551,6 +561,21 @@ async function runAssertions() {
   assert.equal(mediaTargets.response.status, 200);
   assert.deepEqual(mediaTargets.body.targets, [{ targetType: "group", targetOpenid: mediaTargetOpenid, lastSeenAt: now }]);
   results.push("media targets come from the selected bot's received events");
+
+  const unknownTargetUpload = new FormData();
+  unknownTargetUpload.set("targetType", "group");
+  unknownTargetUpload.set("targetOpenid", "unknown-group-openid");
+  unknownTargetUpload.set("fileType", "1");
+  unknownTargetUpload.set("srvSendMsg", "false");
+  unknownTargetUpload.set("file", new File([logoBytes], "unknown.png", { type: "image/png" }));
+  const unknownMedia = await jsonResponse(`/api/bots/${botId}/media`, {
+    method: "POST",
+    headers: { Origin: baseUrl, Cookie: userCookie },
+    body: unknownTargetUpload,
+  });
+  assert.equal(unknownMedia.response.status, 400);
+  assert.equal(unknownMedia.body.code, "MEDIA_TARGET_NOT_OBSERVED");
+  results.push("media upload rejects unobserved OpenIDs before calling QQ");
 
   const initialPluginCenter = await jsonResponse("/api/plugin-center", { headers: { Cookie: userCookie } });
   assert.equal(initialPluginCenter.response.status, 200);

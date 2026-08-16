@@ -356,6 +356,26 @@ describe("system settings and membership billing", () => {
 });
 
 describe("request security", () => {
+  it("sets secure cookies only for HTTPS requests or trusted HTTPS proxies", () => {
+    const originalTrustProxy = process.env.TRUST_PROXY;
+    try {
+      delete process.env.TRUST_PROXY;
+      expect(securityModule.requestUsesHttps(new Request("http://localhost:3000/api/auth/login"))).toBe(false);
+      expect(securityModule.requestUsesHttps(new Request("https://console.example.com/api/auth/login"))).toBe(true);
+      expect(securityModule.requestUsesHttps(new Request("http://localhost:3000/api/auth/login", {
+        headers: { "x-forwarded-proto": "https" },
+      }))).toBe(false);
+
+      process.env.TRUST_PROXY = "true";
+      expect(securityModule.requestUsesHttps(new Request("http://internal-next-host:3000/api/auth/login", {
+        headers: { "x-forwarded-proto": "https, http" },
+      }))).toBe(true);
+    } finally {
+      if (originalTrustProxy === undefined) delete process.env.TRUST_PROXY;
+      else process.env.TRUST_PROXY = originalTrustProxy;
+    }
+  });
+
   it("limits repeated requests within a window", () => {
     securityModule.consumeRateLimit("test-bucket", 2, 60_000);
     securityModule.consumeRateLimit("test-bucket", 2, 60_000);
@@ -717,7 +737,7 @@ describe("request security", () => {
   });
 
   it("streams multipart media to a temporary file with official hashes", async () => {
-    const bytes = Buffer.from("starbot-media-parser-test");
+    const bytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("starbot-media-parser-test")]);
     const form = new FormData();
     form.set("targetType", "c2c");
     form.set("targetOpenid", "openid-test-2026");
@@ -734,6 +754,16 @@ describe("request security", () => {
       await qqMediaModule.removeParsedMediaUpload(upload);
     }
     expect(fs.existsSync(upload.tempPath)).toBe(false);
+  });
+
+  it("rejects files whose contents do not match the selected QQ media type", async () => {
+    const form = new FormData();
+    form.set("targetType", "group");
+    form.set("targetOpenid", "openid-test-2026");
+    form.set("fileType", "1");
+    form.set("file", new File([Buffer.from("not an image")], "renamed.png", { type: "image/png" }));
+    await expect(qqMediaModule.parseMediaUploadRequest(new Request("http://localhost/media", { method: "POST", body: form }))).rejects.toThrow("MEDIA_IMAGE_CONTENT_INVALID");
+    expect(qqMediaModule.mediaUploadInputErrorMessage("MEDIA_IMAGE_CONTENT_INVALID")).toBe("所选图片的实际内容不是有效的 PNG 或 JPEG");
   });
 
   it("spools raw multipart bodies with SHA256 and always supports cleanup", async () => {

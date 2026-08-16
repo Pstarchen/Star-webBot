@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createQQAuthorization } from "@/lib/qq-login";
+import { requestUsesHttps } from "@/lib/security";
 import { getQQLoginConfig } from "@/lib/system-settings-service";
 
 const stateCookie = "starbot_qq_oauth_state";
@@ -15,7 +16,7 @@ export async function GET(request: Request) {
     response.cookies.set(stateCookie, authorization.state, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: requestUsesHttps(request),
       path: "/api/auth/qq/callback",
       maxAge: 10 * 60,
     });
@@ -26,5 +27,3 @@ export async function GET(request: Request) {
     return NextResponse.redirect(url);
   }
 }
-
-export { stateCookie as qqOAuthStateCookie };

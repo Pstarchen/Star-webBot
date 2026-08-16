@@ -12,8 +12,8 @@
 - 管理员可分配套餐、覆盖单用户机器人配额、调整角色并停用账号。
 - 添加机器人时真实验证 AppID/Client Secret，并通过 `GET /users/@me` 自动读取 QQ 官方机器人名称；Secret 使用 AES-256-GCM 加密。
 - 机器人默认使用 WebSocket，也可选择 QQ 官方 Webhook 接入。WebSocket 按官方建议分片数建立完整连接组，支持服务端 Intents 策略、Identify 频控、Heartbeat、ACK 超时、Resume、抖动退避和重启自动恢复。
-- SQLite 租约保证单机多 Node 实例下同一机器人只有一个 Gateway 所有者，实例异常后可自动接管。
-- Gateway 事件持久化到 SQLite，并按会员套餐自动清理过期记录。
+- SQLite 或 MySQL 租约保证同一数据库中的同一机器人只有一个 Gateway 所有者，实例异常后可自动接管。
+- Gateway 事件持久化到所选数据库，并按会员套餐自动清理过期记录。
 - 支持单聊/群聊消息调试、JSON REST 请求台、原始 multipart 代理和 200MB 富媒体分片上传。
 - 支持 QQ 官方 Webhook 接入：每个机器人提供不可猜测的回调地址，完成 Ed25519 challenge、签名校验和事件去重。
 - 开发者使用 `sdk/plugin` 编写插件并构建 ZIP，导入后由平台管理项目、版本、机器人安装、动态配置、优先级、启停、KV 和运行记录。
@@ -32,14 +32,11 @@ Copy-Item .env.example .env.local
 npm run keygen
 ```
 
-将 `npm run keygen` 输出写入 `.env.local` 的 `CREDENTIAL_ENCRYPTION_KEY`，并设置管理员账号：
+将 `npm run keygen` 输出写入 `.env.local` 的 `CREDENTIAL_ENCRYPTION_KEY`。首次启动时访问 `/setup`，安装向导会创建站点和第一个管理员，并提供 SQLite 与 MySQL 两种持久化方式。
 
 ```env
 DATABASE_PATH=./data/starbot.db
 CREDENTIAL_ENCRYPTION_KEY=32字节Base64密钥
-BOOTSTRAP_ADMIN_NAME=系统管理员
-BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-BOOTSTRAP_ADMIN_PASSWORD=强密码
 ```
 
 启动：
@@ -48,7 +45,29 @@ BOOTSTRAP_ADMIN_PASSWORD=强密码
 npm run dev
 ```
 
-访问 [http://localhost:3000](http://localhost:3000)。
+访问 [http://localhost:3000/setup](http://localhost:3000/setup) 完成首次安装。完成后，`/` 是公开官网，`/console` 是需要登录的管理控制台。
+
+### SQLite 安装
+
+在向导中选择 **SQLite** 并填写数据库文件路径即可。默认路径为 `./data/starbot.db`，适用于单机或单实例部署。
+
+### MySQL 安装
+
+先在 MySQL 8.0+ 中创建一个空数据库与具备建表权限的账号，然后在向导中选择 **MySQL**，填写主机、端口、用户名、密码、数据库名称以及 TLS 选项。向导会先测试连接，再创建表结构；密码只加密保存在 `starbot.database-config.json`，不会回显。
+
+也可通过环境变量固定数据库提供方，固定后安装向导会显示只读配置：
+
+```env
+DATABASE_PROVIDER=mysql
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=starbot
+MYSQL_PASSWORD=替换为数据库密码
+MYSQL_DATABASE=starbot
+MYSQL_SSL=false
+```
+
+使用 `DATABASE_PROVIDER=sqlite` 可固定 SQLite；不设置 `DATABASE_PROVIDER` 时，向导选择会持久化到与 SQLite 文件同目录的 `starbot.database-config.json`。可通过 `DATABASE_CONFIG_PATH` 覆盖该文件位置。
 
 ## 系统设置
 
@@ -110,7 +129,7 @@ Webhook 的事件订阅在 QQ 开放平台后台完成。WebSocket 仍需在 Ide
 
 ## 部署边界
 
-单机多 Node 进程可共享 SQLite Gateway 租约、插件安装和兼容远程应用事件租约。跨主机高可用集群不应共享 SQLite 网络文件，应迁移到 PostgreSQL/Redis 或独立 Gateway/事件 Worker。反向代理需允许最大 201MB 请求体。
+同一主机上的多个 Node 进程可共享 SQLite Gateway 租约、插件安装和兼容远程应用事件租约。跨主机部署应选择 MySQL；不要共享 SQLite 网络文件。反向代理需允许最大 201MB 请求体。
 
 QQ OAuth 与 QQ Bot 实网验收仍需要部署方提供真实凭据、已备案 HTTPS 回调和目标 OpenID；本地模拟测试不能替代 QQ 返回的成功响应与 Trace ID。
 

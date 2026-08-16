@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getBotClient, identifyBotTargetType } from "@/lib/bot-service";
-import { describeQQMediaApiError, isQQMediaUploadError, parseMediaUploadRequest, qqMediaApiHttpStatus, QQ_MEDIA_MAX_BYTES, removeParsedMediaUpload, uploadQQMedia, type ParsedMediaUpload } from "@/lib/qq-media";
+import { describeQQMediaApiError, isQQMediaUploadError, mediaUploadInputErrorMessage, parseMediaUploadRequest, qqMediaApiHttpStatus, QQ_MEDIA_MAX_BYTES, removeParsedMediaUpload, uploadQQMedia, type ParsedMediaUpload } from "@/lib/qq-media";
 import { isQQApiError } from "@/lib/qq-api";
 import { assertTrustedRequest } from "@/lib/security";
 import { getSession } from "@/lib/session";
@@ -21,6 +21,13 @@ export async function POST(request: Request, context: { params: Promise<{ botId:
     const client = getBotClient(user, botId);
     upload = await parseMediaUploadRequest(request);
     const knownTargetType = identifyBotTargetType(user, botId, upload.targetOpenid);
+    if (!knownTargetType) {
+      return NextResponse.json({
+        message: "目标 OpenID 不属于当前机器人的近期会话",
+        detail: "请先让目标用户或群聊向当前机器人发送消息，再从近期会话目标中选择后上传",
+        code: "MEDIA_TARGET_NOT_OBSERVED",
+      }, { status: 400 });
+    }
     if (knownTargetType && knownTargetType !== upload.targetType) {
       return NextResponse.json({
         message: "目标 OpenID 与消息场景不匹配",
@@ -41,7 +48,12 @@ export async function POST(request: Request, context: { params: Promise<{ botId:
     if (isQQApiError(error)) return NextResponse.json(describeQQMediaApiError(error, null), { status: qqMediaApiHttpStatus(error) });
     if (error instanceof Error && error.message === "BOT_NOT_FOUND") return NextResponse.json({ message: "机器人不存在" }, { status: 404 });
     if (error instanceof Error && error.message === "MEDIA_FILE_TOO_LARGE") return NextResponse.json({ message: "文件不能超过 200MB" }, { status: 413 });
-    if (error instanceof Error && error.message.startsWith("MEDIA_")) return NextResponse.json({ message: "富媒体上传参数或传输失败", detail: error.message }, { status: 400 });
+    if (error instanceof Error && error.message.startsWith("MEDIA_")) {
+      return NextResponse.json({
+        message: mediaUploadInputErrorMessage(error.message) || "富媒体上传参数或传输失败",
+        code: error.message,
+      }, { status: 400 });
+    }
     return NextResponse.json({ message: "富媒体上传失败" }, { status: 500 });
   } finally {
     await removeParsedMediaUpload(upload);

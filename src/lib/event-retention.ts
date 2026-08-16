@@ -15,11 +15,12 @@ export function pruneExpiredEvents() {
   const remove = database.prepare(`
     DELETE FROM event_logs
     WHERE bot_id IN (SELECT id FROM bots WHERE user_id = ?)
-      AND received_at < datetime('now', ?)
+      AND received_at < ?
   `);
   database.transaction(() => {
     for (const candidate of candidates) {
-      const result = remove.run(candidate.user_id, `-${candidate.retention_days} days`);
+      const expiresBefore = new Date(Date.now() - candidate.retention_days * 24 * 60 * 60 * 1000).toISOString();
+      const result = remove.run(candidate.user_id, expiresBefore);
       deleted += result.changes;
     }
   })();

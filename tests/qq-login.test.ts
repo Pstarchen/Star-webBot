@@ -148,7 +148,7 @@ describe("QQ OAuth", () => {
 
     const response = await callbackRoute.GET(request);
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe("http://localhost:3000/");
+    expect(response.headers.get("location")).toBe("http://localhost:3000/console");
     expect(setCookies(response).some((value) => value.startsWith("starbot_session=") && value.includes("HttpOnly"))).toBe(true);
     expect(setCookies(response).some((value) => value.startsWith("starbot_qq_oauth_state=") && value.includes("Max-Age=0"))).toBe(true);
   });

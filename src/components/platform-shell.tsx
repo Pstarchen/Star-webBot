@@ -14,6 +14,7 @@ import {
   Code2,
   CreditCard,
   LayoutDashboard,
+  KeyRound,
   LogOut,
   Menu,
   PanelLeftClose,
@@ -40,7 +41,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { Bot, EventLog, PluginCenterData, SessionUser, SitePublicSettings, TeamMember } from "@/types/platform";
 
-type ViewKey = "overview" | "bots" | "events" | "plugins" | "developer" | "membership" | "team" | "admin" | "settings";
+type ViewKey = "overview" | "bots" | "events" | "plugins" | "developer" | "membership" | "team" | "admin" | "auth" | "settings";
 
 type NavItem = {
   key: ViewKey;
@@ -57,7 +58,8 @@ const viewMeta: Record<ViewKey, { label: string; description: string }> = {
   membership: { label: "会员与账单", description: "购买会员套餐、查看权益有效期和支付订单" },
   team: { label: "团队成员", description: "角色、协作与访问控制" },
   admin: { label: "用户设置", description: "用户会员、配额、角色与账号状态" },
-  settings: { label: "系统设置", description: "站点品牌、QQ 登录、支付渠道与套餐定价" },
+  auth: { label: "登录与注册", description: "邮箱验证、验证码登录与 QQ 互联" },
+  settings: { label: "系统设置", description: "站点品牌、支付渠道与套餐定价" },
 };
 
 const workspaceNav: NavItem[] = [
@@ -361,6 +363,7 @@ export function PlatformShell({
     const adminNav: NavItem[] = [
       { key: "team", label: "团队成员", icon: Users },
       { key: "admin", label: "用户设置", icon: ShieldCheck },
+      { key: "auth", label: "登录与注册", icon: KeyRound },
       { key: "settings", label: "系统设置", icon: Settings2 },
     ];
 
@@ -523,7 +526,8 @@ export function PlatformShell({
             }} />}
             {activeView === "team" && <TeamView members={members} />}
             {activeView === "admin" && currentUser.role === "admin" && <AdminView currentUserId={currentUser.id} initialMembers={members} onMembersChange={setMembers} />}
-            {activeView === "settings" && currentUser.role === "admin" && <SystemSettingsView onSiteChange={setCurrentSite} />}
+            {activeView === "auth" && currentUser.role === "admin" && <SystemSettingsView area="auth" onSiteChange={setCurrentSite} />}
+            {activeView === "settings" && currentUser.role === "admin" && <SystemSettingsView area="system" onSiteChange={setCurrentSite} />}
           </main>
           <SiteFooter site={currentSite} />
         </div>

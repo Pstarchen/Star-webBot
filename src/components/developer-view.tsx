@@ -86,6 +86,13 @@ function mediaTargetKey(target: Pick<BotMediaTarget, "targetType" | "targetOpeni
   return `${target.targetType}:${target.targetOpenid}`;
 }
 
+function mediaFileAccept(fileType: "1" | "2" | "3" | "4") {
+  if (fileType === "1") return ".png,.jpg,.jpeg,image/png,image/jpeg";
+  if (fileType === "2") return ".mp4,video/mp4";
+  if (fileType === "3") return ".silk,application/octet-stream";
+  return undefined;
+}
+
 const capabilities = [
   [MessageSquareReply, "回复消息", "文本、Markdown、Ark 与键盘"],
   [Database, "保存状态", "按安装实例隔离的 KV 存储"],
@@ -117,7 +124,7 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
   const [apiSending, setApiSending] = useState(false);
   const [mediaTargetType, setMediaTargetType] = useState<"c2c" | "group">("c2c");
   const [mediaTargetOpenid, setMediaTargetOpenid] = useState("");
-  const [mediaTargetPreset, setMediaTargetPreset] = useState("manual");
+  const [mediaTargetPreset, setMediaTargetPreset] = useState("");
   const [mediaTargets, setMediaTargets] = useState<BotMediaTarget[]>([]);
   const [mediaFileType, setMediaFileType] = useState<"1" | "2" | "3" | "4">("1");
   const [mediaFile, setMediaFile] = useState<File | null>(null);
@@ -142,13 +149,13 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
           setMediaTargetPreset(mediaTargetKey(first));
         } else {
           setMediaTargetOpenid("");
-          setMediaTargetPreset("manual");
+          setMediaTargetPreset("");
         }
       })
       .catch(() => {
         if (!controller.signal.aborted) {
           setMediaTargets([]);
-          setMediaTargetPreset("manual");
+          setMediaTargetPreset("");
           setMediaTargetOpenid("");
         }
       });
@@ -422,7 +429,7 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
               <span className="field-label">机器人</span>
               <Select
                 value={botId}
-                onValueChange={(value) => { setBotId(value); setMediaTargets([]); setMediaTargetPreset("manual"); setMediaTargetOpenid(""); }}
+                onValueChange={(value) => { setBotId(value); setMediaTargets([]); setMediaTargetPreset(""); setMediaTargetOpenid(""); }}
                 options={bots.map((bot) => ({ value: bot.id, label: `${bot.name} · ${bot.environment === "production" ? "正式使用" : "测试使用"}` }))}
                 placeholder="请选择机器人"
                 ariaLabel="选择富媒体上传机器人"
@@ -434,20 +441,14 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
               if (selected) {
                 setMediaTargetType(selected.targetType);
                 setMediaTargetOpenid(selected.targetOpenid);
-              } else {
-                setMediaTargetOpenid("");
               }
-            }} options={[
-              ...mediaTargets.map((target) => ({ value: mediaTargetKey(target), label: `${target.targetType === "group" ? "群聊" : "单聊"} · ${maskedOpenid(target.targetOpenid)} · ${new Date(target.lastSeenAt).toLocaleString("zh-CN")}` })),
-              { value: "manual", label: mediaTargets.length ? "手动输入其他 OpenID" : "暂无事件目标，手动输入 OpenID" },
-            ]} placeholder="请选择会话目标" ariaLabel="选择富媒体会话目标" /></label>
-            {mediaTargetPreset === "manual" && <label className="block"><span className="field-label">消息场景</span><Select value={mediaTargetType} onValueChange={(value) => { setMediaTargetType(value as "c2c" | "group"); setMediaTargetOpenid(""); }} options={[{ value: "c2c", label: "单聊用户" }, { value: "group", label: "群聊" }]} ariaLabel="选择富媒体消息场景" /></label>}
-            <label className="block"><span className="field-label">媒体类型</span><Select value={mediaFileType} onValueChange={(value) => setMediaFileType(value as typeof mediaFileType)} options={[{ value: "1", label: "图片 PNG/JPG" }, { value: "2", label: "视频 MP4" }, { value: "3", label: "语音 SILK" }, { value: "4", label: "普通文件" }]} ariaLabel="选择媒体类型" /></label>
-            {mediaTargetPreset === "manual" && <label className="block md:col-span-2"><span className="field-label">目标 OpenID</span><Input value={mediaTargetOpenid} onChange={(event) => setMediaTargetOpenid(event.target.value)} className="mono-data text-xs" placeholder={mediaTargetType === "group" ? "群事件中的 group_openid" : "单聊事件中的 author.user_openid"} required /></label>}
-            <div className="md:col-span-2"><span className="field-label">本地文件</span><FilePicker file={mediaFile} onFileChange={setMediaFile} browseLabel="选择媒体" emptyLabel="尚未选择媒体文件" helperText="支持图片、视频、语音与普通文件，最大 200MB" disabled={mediaSending} /></div>
+            }} options={mediaTargets.map((target) => ({ value: mediaTargetKey(target), label: `${target.targetType === "group" ? "群聊" : "单聊"} · ${maskedOpenid(target.targetOpenid)} · ${new Date(target.lastSeenAt).toLocaleString("zh-CN")}` }))} placeholder={mediaTargets.length ? "请选择会话目标" : "暂无可用会话目标"} ariaLabel="选择富媒体会话目标" /></label>
+            <label className="block"><span className="field-label">媒体类型</span><Select value={mediaFileType} onValueChange={(value) => { setMediaFileType(value as typeof mediaFileType); setMediaFile(null); }} options={[{ value: "1", label: "图片 PNG/JPG" }, { value: "2", label: "视频 MP4" }, { value: "3", label: "语音 SILK" }, { value: "4", label: "普通文件" }]} ariaLabel="选择媒体类型" /></label>
+            {!mediaTargets.length && <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800 md:col-span-2">请先让目标用户或群聊向当前机器人发送一条消息，平台收到事件后会自动列出可用目标。</div>}
+            <div className="md:col-span-2"><span className="field-label">本地文件</span><FilePicker file={mediaFile} onFileChange={setMediaFile} accept={mediaFileAccept(mediaFileType)} browseLabel="选择媒体" emptyLabel="尚未选择媒体文件" helperText="支持图片、视频、语音与普通文件，最大 200MB" disabled={mediaSending} /></div>
             <div className="flex items-center gap-2 text-xs md:col-span-2"><Switch checked={mediaSendDirectly} onCheckedChange={setMediaSendDirectly} aria-label="上传完成后直接发送消息" /><span>上传完成后直接发送消息</span></div>
             {mediaError && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 md:col-span-2">{mediaError}</div>}
-            <div className="md:col-span-2"><Button type="submit" disabled={mediaSending || !bots.length || !mediaFile}><FileUp size={14} />{mediaSending ? "正在分片上传..." : "上传到 QQ"}</Button></div>
+            <div className="md:col-span-2"><Button type="submit" disabled={mediaSending || !bots.length || !mediaTargetOpenid || !mediaFile}><FileUp size={14} />{mediaSending ? "正在分片上传..." : "上传到 QQ"}</Button></div>
           </form>
           {mediaResult !== null && <pre className="mono-data mt-5 max-h-80 max-w-full overflow-auto rounded-md bg-zinc-950 p-4 text-[10px] leading-5 text-zinc-200">{JSON.stringify(mediaResult, null, 2)}</pre>}
         </CardContent>

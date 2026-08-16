@@ -18,6 +18,13 @@ function requestAddress(request: Request) {
   return "direct";
 }
 
+export function requestUsesHttps(request: Request) {
+  const forwardedProtocol = process.env.TRUST_PROXY === "true"
+    ? request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim()
+    : null;
+  return (forwardedProtocol || new URL(request.url).protocol.replace(":", "")).toLowerCase() === "https";
+}
+
 export function rateLimitKey(request: Request, action: string, subject = "") {
   return createHash("sha256")
     .update([action, requestAddress(request), subject.trim().toLowerCase()].join(":"))

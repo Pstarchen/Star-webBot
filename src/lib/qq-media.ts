@@ -1,7 +1,7 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { rm } from "node:fs/promises";
+import { open, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -146,6 +146,37 @@ function assertFileTypeMatchesName(fileType: QQMediaFileType, fileName: string) 
   if (fileType === 3 && extension !== ".silk") throw new Error("MEDIA_AUDIO_FORMAT_INVALID");
 }
 
+async function assertFileTypeMatchesContent(fileType: QQMediaFileType, filePath: string) {
+  if (fileType === 4) return;
+  const handle = await open(filePath, "r");
+  try {
+    const header = Buffer.alloc(16);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    const value = header.subarray(0, bytesRead);
+    if (fileType === 1) {
+      const isPng = value.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      const isJpeg = value.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]));
+      if (!isPng && !isJpeg) throw new Error("MEDIA_IMAGE_CONTENT_INVALID");
+    }
+    if (fileType === 2 && !value.subarray(4, 8).equals(Buffer.from("ftyp"))) throw new Error("MEDIA_VIDEO_CONTENT_INVALID");
+    if (fileType === 3 && !value.subarray(0, 9).equals(Buffer.from("#!SILK_V3"))) throw new Error("MEDIA_AUDIO_CONTENT_INVALID");
+  } finally {
+    await handle.close();
+  }
+}
+
+export function mediaUploadInputErrorMessage(code: string) {
+  const messages: Record<string, string> = {
+    MEDIA_IMAGE_FORMAT_INVALID: "图片仅支持 PNG、JPG 或 JPEG 文件",
+    MEDIA_VIDEO_FORMAT_INVALID: "视频仅支持 MP4 文件",
+    MEDIA_AUDIO_FORMAT_INVALID: "语音仅支持 SILK 文件",
+    MEDIA_IMAGE_CONTENT_INVALID: "所选图片的实际内容不是有效的 PNG 或 JPEG",
+    MEDIA_VIDEO_CONTENT_INVALID: "所选视频的实际内容不是 MP4 容器格式",
+    MEDIA_AUDIO_CONTENT_INVALID: "所选语音的实际内容不是 SILK 格式",
+  };
+  return messages[code] || null;
+}
+
 export async function parseMediaUploadRequest(request: Request): Promise<ParsedMediaUpload> {
   if (!request.body) throw new Error("MEDIA_BODY_REQUIRED");
   const contentType = request.headers.get("content-type") || "";
@@ -205,6 +236,7 @@ export async function parseMediaUploadRequest(request: Request): Promise<ParsedM
     if (targetType !== "c2c" && targetType !== "group") throw new Error("MEDIA_TARGET_TYPE_INVALID");
     if (!targetOpenid || targetOpenid.length > 160) throw new Error("MEDIA_TARGET_INVALID");
     assertFileTypeMatchesName(fileType as QQMediaFileType, fileName);
+    await assertFileTypeMatchesContent(fileType as QQMediaFileType, tempPath);
     return {
       tempPath,
       fileName,

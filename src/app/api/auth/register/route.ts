@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { consumeEmailVerificationCode } from "@/lib/email-code-service";
-import { RateLimitError, assertTrustedRequest, consumeRateLimit, rateLimitKey } from "@/lib/security";
+import { RateLimitError, assertTrustedRequest, consumeRateLimit, rateLimitKey, requestUsesHttps } from "@/lib/security";
 import { createSessionToken, registerUser, sessionCookieName, sessionMaxAgeSeconds } from "@/lib/session";
 import { getEmailConfig } from "@/lib/system-settings-service";
 
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     response.cookies.set(sessionCookieName, createSessionToken(user), {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: requestUsesHttps(request),
       path: "/",
       maxAge: sessionMaxAgeSeconds,
     });

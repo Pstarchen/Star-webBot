@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import * as Tabs from "@radix-ui/react-tabs";
 import { ArrowRight, Eye, EyeOff, KeyRound, LockKeyhole, Mail, MessageCircle } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
@@ -21,6 +22,7 @@ export function LoginForm({
   site: SitePublicSettings;
   initialError?: string;
 }) {
+  const router = useRouter();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [loginMethod, setLoginMethod] = useState<"password" | "email_code">("password");
   const [name, setName] = useState("");
@@ -41,7 +43,7 @@ export function LoginForm({
   }, [codeCooldown]);
 
   const registerNeedsCode = mode === "register" && auth.emailRegistrationVerificationEnabled;
-  const usesEmailCode = registerNeedsCode || loginMethod === "email_code";
+  const usesEmailCode = registerNeedsCode || (mode === "login" && loginMethod === "email_code");
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -63,7 +65,7 @@ export function LoginForm({
       if (!response.ok) {
         throw new Error(body.message || (mode === "login" ? "登录失败，请稍后重试" : "注册失败，请稍后重试"));
       }
-      window.location.replace("/");
+      router.replace("/console");
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "认证请求失败");
     } finally {

@@ -45,6 +45,7 @@ function maskAppId(appId: string) {
 
 function botMetrics(botId: string) {
   const database = getDatabase();
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   return database.prepare(`
     SELECT
       COUNT(*) AS total,
@@ -52,8 +53,8 @@ function botMetrics(botId: string) {
       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successes,
       COALESCE(AVG(latency_ms), 0) AS latency
     FROM event_logs
-    WHERE bot_id = ? AND received_at >= datetime('now', '-1 day')
-  `).get(botId) as { total: number; messages: number; successes: number; latency: number };
+    WHERE bot_id = ? AND received_at >= ?
+  `).get(botId, since) as { total: number; messages: number; successes: number; latency: number };
 }
 
 function toBot(row: BotRow): Bot {
@@ -290,15 +291,21 @@ export function getMessageReplyContext(user: SessionUser, botId: string, targetT
     const messageId = typeof data.id === "string" ? data.id : null;
     if (eventTarget !== targetOpenid || !messageId) continue;
 
-    const previousReplies = database.prepare(`
-      SELECT COUNT(*) AS count
+    const previousReplies = (database.prepare(`
+      SELECT payload_json
       FROM event_logs
       WHERE bot_id = ? AND event_type = 'OUTBOUND_MESSAGE'
-        AND json_extract(payload_json, '$.request.msg_id') = ?
-    `).get(botId, messageId) as { count: number };
+    `).all(botId) as Array<{ payload_json: string }>).reduce((count, outbound) => {
+      try {
+        const outboundPayload = JSON.parse(outbound.payload_json) as { request?: { msg_id?: unknown } };
+        return outboundPayload.request?.msg_id === messageId ? count + 1 : count;
+      } catch {
+        return count;
+      }
+    }, 0);
     const maxReplies = targetType === "group" ? 5 : 4;
-    if (previousReplies.count >= maxReplies) throw new Error("MESSAGE_REPLY_LIMIT_REACHED");
-    return { msgId: messageId, msgSeq: previousReplies.count + 1, receivedAt: row.received_at };
+    if (previousReplies >= maxReplies) throw new Error("MESSAGE_REPLY_LIMIT_REACHED");
+    return { msgId: messageId, msgSeq: previousReplies + 1, receivedAt: row.received_at };
   }
 
   throw new Error("MESSAGE_REPLY_CONTEXT_NOT_FOUND");

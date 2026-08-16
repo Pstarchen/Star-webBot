@@ -38,9 +38,13 @@ type OrderRow = {
 
 const cycleMonths: Record<BillingCycle, number> = { monthly: 1, quarterly: 3, yearly: 12 };
 
-function parseFeatures(value: string) {
-  try { return JSON.parse(value) as string[]; }
-  catch { return []; }
+function parseFeatures(value: unknown) {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed.filter((feature): feature is string => typeof feature === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function toPlan(row: MembershipPlanRow): MembershipPlan {

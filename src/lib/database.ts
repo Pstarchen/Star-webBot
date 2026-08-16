@@ -3,20 +3,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
+import { captureDatabaseConfigurationFile, databaseConfigurationFromInput, databaseConfigurationIsEnvironmentManaged, databaseConfigurationKey, getDatabaseConfiguration, persistDatabaseConfiguration, restoreDatabaseConfigurationFile, type DatabaseConfiguration, type DatabaseConfigurationInput } from "@/lib/database-config";
+import { MYSQL_SCHEMA } from "@/lib/mysql-schema";
+import { createMySqlDatabase, type PlatformDatabase } from "@/lib/mysql-sync";
 import { hashPassword } from "@/lib/password";
 
 type GlobalDatabase = typeof globalThis & {
-  __starbotDatabase?: Database.Database;
+  __starbotDatabase?: PlatformDatabase;
+  __starbotDatabaseConfigurationKey?: string;
   __starbotMembershipExpiryCheckedAt?: number;
 };
 
-function databasePath() {
-  const configured = process.env.DATABASE_PATH;
-  if (configured) return path.resolve(configured);
-  return path.join(process.cwd(), "data", "starbot.db");
-}
-
-function migrate(database: Database.Database) {
+function migrateSqlite(database: Database.Database) {
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
@@ -570,7 +568,58 @@ function migrate(database: Database.Database) {
   database.prepare("INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)").run("20260813_system_settings_and_billing", now);
 }
 
-function expirePaidMemberships(database: Database.Database) {
+function migrateMySql(database: PlatformDatabase) {
+  database.exec(MYSQL_SCHEMA);
+  const now = new Date().toISOString();
+  const insertPlan = database.prepare(`
+    INSERT OR IGNORE INTO membership_plans
+      (id, name, bot_quota, plugin_quota, event_retention_days, enabled, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+  `);
+  insertPlan.run("free", "免费版", 1, 3, 7, now, now);
+  insertPlan.run("pro", "专业版", 5, 20, 30, now, now);
+  insertPlan.run("team", "团队版", 20, 100, 90, now, now);
+
+  database.prepare(`
+    UPDATE membership_plans SET
+      description = CASE id
+        WHEN 'free' THEN '适合个人体验与轻量机器人开发'
+        WHEN 'pro' THEN '适合持续运营多个机器人和插件'
+        WHEN 'team' THEN '适合团队协作与高频事件处理'
+        ELSE description END,
+      monthly_price_cents = CASE id WHEN 'pro' THEN 2900 WHEN 'team' THEN 9900 ELSE monthly_price_cents END,
+      quarterly_price_cents = CASE id WHEN 'pro' THEN 7900 WHEN 'team' THEN 26900 ELSE quarterly_price_cents END,
+      yearly_price_cents = CASE id WHEN 'pro' THEN 29900 WHEN 'team' THEN 99900 ELSE yearly_price_cents END,
+      features_json = CASE id
+        WHEN 'free' THEN '["1 个机器人","3 个插件安装","事件保留 7 天"]'
+        WHEN 'pro' THEN '["5 个机器人","20 个插件安装","事件保留 30 天","优先事件处理"]'
+        WHEN 'team' THEN '["20 个机器人","100 个插件安装","事件保留 90 天","团队协作权限"]'
+        ELSE features_json END,
+      updated_at = ?
+    WHERE id IN ('free', 'pro', 'team') AND (description = '' OR features_json = '[]')
+  `).run(now);
+
+  database.prepare(`
+    INSERT OR IGNORE INTO system_settings
+      (id, site_name, site_tagline, site_description, copyright_text, payment_enabled, payment_provider, manual_payment_instructions, updated_at)
+    VALUES (1, 'StarBot', 'QQ Bot Console', '面向团队的多用户、多机器人、可扩展 QQ 官方机器人管理与开发平台。', 'StarBot', ?, 'sandbox', '提交订单后请联系管理员，并提供订单号完成审核。', ?)
+  `).run(process.env.NODE_ENV === "production" ? 0 : 1, now);
+
+  if ((database.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number }).count > 0) {
+    database.prepare("UPDATE system_settings SET install_completed = 1 WHERE id = 1 AND install_completed = 0").run();
+  }
+  database.prepare(`
+    INSERT OR IGNORE INTO user_memberships
+      (user_id, plan_id, status, starts_at, expires_at, assigned_by, updated_at)
+    SELECT id,
+      CASE WHEN bot_quota >= 20 THEN 'team' WHEN bot_quota >= 5 THEN 'pro' ELSE 'free' END,
+      'active', created_at, NULL, NULL, ? FROM users
+  `).run(now);
+  database.prepare("INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)").run("20260812_sdk_application_schema", now);
+  database.prepare("INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)").run("20260813_system_settings_and_billing", now);
+}
+
+function expirePaidMemberships(database: PlatformDatabase) {
   const nowMs = Date.now();
   const state = globalThis as GlobalDatabase;
   if (state.__starbotMembershipExpiryCheckedAt && nowMs - state.__starbotMembershipExpiryCheckedAt < 30_000) return;
@@ -591,7 +640,7 @@ function expirePaidMemberships(database: Database.Database) {
   })();
 }
 
-function seedDevelopmentUsers(database: Database.Database) {
+function seedDevelopmentUsers(database: PlatformDatabase) {
   const row = database.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number };
   if (row.count > 0) return;
 
@@ -615,7 +664,7 @@ function seedDevelopmentUsers(database: Database.Database) {
   transaction();
 }
 
-function seedOfficialPlugins(database: Database.Database) {
+function seedOfficialPlugins(database: PlatformDatabase) {
   const owner = database.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1").get() as { id: string } | undefined;
   if (!owner) return;
 
@@ -670,7 +719,7 @@ function seedOfficialPlugins(database: Database.Database) {
   })();
 }
 
-function ensureUserMemberships(database: Database.Database) {
+function ensureUserMemberships(database: PlatformDatabase) {
   const now = new Date().toISOString();
   database.prepare(`
     INSERT OR IGNORE INTO user_memberships
@@ -681,23 +730,111 @@ function ensureUserMemberships(database: Database.Database) {
   `).run(now);
 }
 
-export function getDatabase() {
+function openDatabase(configuration: DatabaseConfiguration, options: { seedDevelopmentUsers: boolean }) {
+  let database: PlatformDatabase | null = null;
+  try {
+    if (configuration.provider === "sqlite") {
+      fs.mkdirSync(path.dirname(configuration.path), { recursive: true });
+      const sqlite = new Database(configuration.path);
+      migrateSqlite(sqlite);
+      database = sqlite as unknown as PlatformDatabase;
+    } else {
+      database = createMySqlDatabase(configuration.config);
+      migrateMySql(database);
+    }
+    if (!database) throw new Error("DATABASE_OPEN_FAILED");
+    if (options.seedDevelopmentUsers) seedDevelopmentUsers(database);
+    seedOfficialPlugins(database);
+    ensureUserMemberships(database);
+    expirePaidMemberships(database);
+    return database;
+  } catch (error) {
+    database?.close();
+    throw error;
+  }
+}
+
+function resetMembershipExpiryCheck() {
+  delete (globalThis as GlobalDatabase).__starbotMembershipExpiryCheckedAt;
+}
+
+export function getDatabase(): PlatformDatabase {
   const globalDatabase = globalThis as GlobalDatabase;
-  if (globalDatabase.__starbotDatabase) {
+  const configuration = getDatabaseConfiguration();
+  const configurationKey = databaseConfigurationKey(configuration);
+  if (globalDatabase.__starbotDatabase && globalDatabase.__starbotDatabaseConfigurationKey === configurationKey) {
     expirePaidMemberships(globalDatabase.__starbotDatabase);
     return globalDatabase.__starbotDatabase;
   }
+  globalDatabase.__starbotDatabase?.close();
+  resetMembershipExpiryCheck();
+  const database = openDatabase(configuration, { seedDevelopmentUsers: true });
+  globalDatabase.__starbotDatabase = database;
+  globalDatabase.__starbotDatabaseConfigurationKey = configurationKey;
+  return database;
+}
 
-  const filePath = databasePath();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const database = new Database(filePath);
-  migrate(database);
-  seedDevelopmentUsers(database);
+export type DatabaseInstallationHandle = {
+  configuration: DatabaseConfiguration;
+  persist: () => void;
+  commit: () => void;
+  rollback: () => void;
+};
+
+export function beginDatabaseInstallation(input: DatabaseConfigurationInput): DatabaseInstallationHandle {
+  const globalDatabase = globalThis as GlobalDatabase;
+  const previousDatabase = globalDatabase.__starbotDatabase;
+  const previousConfigurationKey = globalDatabase.__starbotDatabaseConfigurationKey;
+  const configuration = databaseConfigurationIsEnvironmentManaged() ? getDatabaseConfiguration() : databaseConfigurationFromInput(input);
+  const configurationKey = databaseConfigurationKey(configuration);
+  const configurationSnapshot = captureDatabaseConfigurationFile();
+  const candidate = previousDatabase !== undefined && previousConfigurationKey === configurationKey
+    ? previousDatabase
+    : openDatabase(configuration, { seedDevelopmentUsers: false });
+  globalDatabase.__starbotDatabase = candidate;
+  globalDatabase.__starbotDatabaseConfigurationKey = configurationKey;
+  resetMembershipExpiryCheck();
+  let persisted = false;
+  let finalized = false;
+
+  return {
+    configuration,
+    persist() {
+      if (persisted) return;
+      if (!databaseConfigurationIsEnvironmentManaged()) persistDatabaseConfiguration(configuration);
+      persisted = true;
+    },
+    commit() {
+      if (finalized) return;
+      if (candidate !== previousDatabase) previousDatabase?.close();
+      finalized = true;
+    },
+    rollback() {
+      if (finalized) return;
+      if (candidate !== previousDatabase) candidate.close();
+      globalDatabase.__starbotDatabase = previousDatabase;
+      globalDatabase.__starbotDatabaseConfigurationKey = previousConfigurationKey;
+      resetMembershipExpiryCheck();
+      if (persisted && !databaseConfigurationIsEnvironmentManaged()) restoreDatabaseConfigurationFile(configurationSnapshot);
+      finalized = true;
+    },
+  };
+}
+
+export function testDatabaseConfiguration(input: DatabaseConfigurationInput) {
+  const configuration = databaseConfigurationIsEnvironmentManaged() ? getDatabaseConfiguration() : databaseConfigurationFromInput(input);
+  const database = openDatabase(configuration, { seedDevelopmentUsers: false });
+  try {
+    database.prepare("SELECT 1 AS connected").get();
+  } finally {
+    database.close();
+  }
+  return configuration.provider;
+}
+
+export function seedPostInstallationData(database = getDatabase()) {
   seedOfficialPlugins(database);
   ensureUserMemberships(database);
-  expirePaidMemberships(database);
-  globalDatabase.__starbotDatabase = database;
-  return database;
 }
 
 export function writeAuditLog(actorUserId: string | null, action: string, targetType: string, targetId: string | null, metadata: unknown = {}) {

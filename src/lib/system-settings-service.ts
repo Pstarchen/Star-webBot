@@ -1,7 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
-import { getDatabase, writeAuditLog } from "@/lib/database";
+import { getDatabase, seedPostInstallationData, writeAuditLog } from "@/lib/database";
 import { hashPassword } from "@/lib/password";
 import type { AdminSystemSettings, PaymentProvider, SessionUser, SitePublicSettings } from "@/types/platform";
 
@@ -272,6 +272,7 @@ export function completeInstallation(input: {
       now,
     );
     writeAuditLog(adminId, "system.install.complete", "system_settings", "1", { siteName: input.siteName });
+    seedPostInstallationData(database);
   })();
   const admin = database.prepare(`
     SELECT users.*,

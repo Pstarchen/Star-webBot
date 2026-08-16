@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { assertTrustedRequest } from "@/lib/security";
+import { assertTrustedRequest, requestUsesHttps } from "@/lib/security";
 import { deleteCurrentSession, sessionCookieName } from "@/lib/session";
 
 export async function POST(request: Request) {
@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   response.cookies.set(sessionCookieName, "", {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: requestUsesHttps(request),
     path: "/",
     maxAge: 0,
   });
