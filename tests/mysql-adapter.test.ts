@@ -13,6 +13,8 @@ let gatewayCoordinationModule: typeof import("@/lib/gateway-coordination");
 let sessionModule: typeof import("@/lib/session");
 let systemSettingsModule: typeof import("@/lib/system-settings-service");
 let configurationDirectory: string;
+const installationLogoBytes = Buffer.alloc(5 * 1024 * 1024, 0x4c);
+const installationFaviconBytes = Buffer.alloc(5 * 1024 * 1024, 0x46);
 
 mysqlDescribe("MySQL database adapter", () => {
   beforeAll(async () => {
@@ -47,8 +49,8 @@ mysqlDescribe("MySQL database adapter", () => {
         adminName: "MySQL Admin",
         adminEmail: "mysql-admin@test.local",
         adminPassword: "mysql-admin-password",
-        logo: { mimeType: "image/png", bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
-        favicon: { mimeType: "image/x-icon", bytes: new Uint8Array([0x00, 0x00, 0x01, 0x00]) },
+        logo: { mimeType: "image/png", bytes: installationLogoBytes },
+        favicon: { mimeType: "image/x-icon", bytes: installationFaviconBytes },
       });
       installation.commit();
     } catch (error) {
@@ -71,10 +73,14 @@ mysqlDescribe("MySQL database adapter", () => {
     expect(database.prepare("SELECT id FROM membership_plans ORDER BY id").all()).toEqual([{ id: "free" }, { id: "pro" }, { id: "team" }]);
     expect(database.prepare("SELECT site_logo_mime, site_logo_blob, site_favicon_mime, site_favicon_blob FROM system_settings WHERE id = 1").get()).toEqual({
       site_logo_mime: "image/png",
-      site_logo_blob: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      site_logo_blob: null,
       site_favicon_mime: "image/x-icon",
-      site_favicon_blob: Buffer.from([0x00, 0x00, 0x01, 0x00]),
+      site_favicon_blob: null,
     });
+    expect(systemSettingsModule.getSiteAsset("logo")).toEqual({ mime: "image/png", data: installationLogoBytes });
+    expect(systemSettingsModule.getSiteAsset("favicon")).toEqual({ mime: "image/x-icon", data: installationFaviconBytes });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM site_asset_chunks WHERE kind = 'logo'").get()).toEqual({ count: 27 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM site_asset_chunks WHERE kind = 'favicon'").get()).toEqual({ count: 27 });
     expect(sessionModule.authenticate("mysql-admin@test.local", "mysql-admin-password")).toMatchObject({ role: "admin", membershipPlan: "pro" });
   });
 

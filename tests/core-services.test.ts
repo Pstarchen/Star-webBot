@@ -246,6 +246,20 @@ describe("system settings and membership billing", () => {
     }
   });
 
+  it("stores site assets in small chunks and still reads legacy blobs", () => {
+    const admin = adminUser();
+    const logo = Buffer.alloc(900 * 1024, 0x5a);
+    systemSettingsModule.setSiteAsset(admin, "logo", "image/png", logo);
+    expect(systemSettingsModule.getSiteAsset("logo")).toEqual({ mime: "image/png", data: logo });
+    expect(databaseModule.getDatabase().prepare("SELECT COUNT(*) AS count FROM site_asset_chunks WHERE kind = 'logo'").get()).toEqual({ count: 5 });
+    expect(databaseModule.getDatabase().prepare("SELECT site_logo_blob AS data FROM system_settings WHERE id = 1").get()).toEqual({ data: null });
+
+    const legacy = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    databaseModule.getDatabase().prepare("DELETE FROM site_asset_chunks WHERE kind = 'logo'").run();
+    databaseModule.getDatabase().prepare("UPDATE system_settings SET site_logo_mime = 'image/png', site_logo_blob = ? WHERE id = 1").run(legacy);
+    expect(systemSettingsModule.getSiteAsset("logo")).toEqual({ mime: "image/png", data: legacy });
+  });
+
   it.each([
     ["monthly", 1, 2900],
     ["quarterly", 3, 7900],

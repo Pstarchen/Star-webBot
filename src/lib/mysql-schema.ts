@@ -278,6 +278,13 @@ CREATE TABLE IF NOT EXISTS system_settings (
   CONSTRAINT system_settings_updated_by_fk FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS site_asset_chunks (
+  kind VARCHAR(16) NOT NULL,
+  chunk_index INT NOT NULL,
+  data_blob MEDIUMBLOB NOT NULL,
+  PRIMARY KEY (kind, chunk_index)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS membership_orders (
   id VARCHAR(191) PRIMARY KEY,
   order_no VARCHAR(191) NOT NULL UNIQUE,

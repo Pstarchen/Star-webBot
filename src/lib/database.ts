@@ -278,6 +278,13 @@ function migrateSqlite(database: Database.Database) {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS site_asset_chunks (
+      kind TEXT NOT NULL CHECK(kind IN ('logo', 'favicon')),
+      chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+      data_blob BLOB NOT NULL,
+      PRIMARY KEY(kind, chunk_index)
+    );
+
     CREATE TABLE IF NOT EXISTS membership_orders (
       id TEXT PRIMARY KEY,
       order_no TEXT NOT NULL UNIQUE,

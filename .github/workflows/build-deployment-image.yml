@@ -72,6 +72,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Enforce legacy 1MB packet limit
+        run: |
+          node <<'NODE'
+          const mysql = require("mysql2/promise");
+          (async () => {
+            const connection = await mysql.createConnection({ host: "127.0.0.1", port: 3306, user: "root", password: "test-root-password" });
+            await connection.query("SET GLOBAL max_allowed_packet = 1048576");
+            const [rows] = await connection.query("SELECT @@GLOBAL.max_allowed_packet AS packet_bytes");
+            console.log(`MySQL packet limit: ${rows[0].packet_bytes} bytes`);
+            await connection.end();
+          })().catch((error) => { console.error(error); process.exit(1); });
+          NODE
+
       - name: Run MySQL adapter tests
         run: npm test -- tests/mysql-adapter.test.ts
 

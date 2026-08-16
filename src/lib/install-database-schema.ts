@@ -16,7 +16,7 @@ export type InstallationDatabaseValues = z.infer<typeof installationDatabaseSche
 
 export function installationDatabaseErrorCode(error: unknown) {
   const message = error instanceof Error ? error.message : "";
-  return message.match(/\b(?:ER|MYSQL|DATABASE|CREDENTIAL)_[A-Z0-9_]+\b/)?.[0] || "UNKNOWN";
+  return message.match(/\b(?:ER|MYSQL|DATABASE|CREDENTIAL)_[A-Z0-9_]+\b|\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE)\b/)?.[0] || "UNKNOWN";
 }
 
 export function toDatabaseConfigurationInput(input: InstallationDatabaseValues): DatabaseConfigurationInput {
@@ -37,6 +37,8 @@ export function installationDatabaseErrorMessage(error: unknown) {
   if (code === "SQLITE_PATH_INVALID") return "SQLite 数据库文件路径不合法";
   if (code === "MYSQL_CONFIGURATION_INVALID" || code === "MYSQL_ENVIRONMENT_INVALID") return "请完整填写 MySQL 主机、端口、用户名和数据库名";
   if (code.includes("MYSQL_CONNECTION_TIMEOUT") || code.includes("ETIMEDOUT") || code.includes("ECONNREFUSED")) return "无法连接 MySQL，请检查主机、端口和网络访问";
+  if (code.includes("ER_NET_PACKET_TOO_LARGE") || code.includes("MYSQL_PACKET_TOO_LARGE")) return "MySQL 数据包限制过小，站点图片将自动分块后重试";
+  if (code.includes("ECONNRESET") || code.includes("EPIPE") || code.includes("MYSQL_CONNECTION_LOST")) return "MySQL 连接在初始化写入时中断，请重试或检查数据库数据包限制";
   if (code.includes("ER_ACCESS_DENIED_ERROR")) return "MySQL 用户名或密码不正确";
   if (code.includes("ER_BAD_DB_ERROR")) return "指定的 MySQL 数据库不存在";
   if (code.includes("ER_DBACCESS_DENIED_ERROR")) return "MySQL 用户没有该数据库的访问权限";

@@ -18,6 +18,8 @@ describe("MySQL schema compatibility", () => {
     expect(schema).toContain("PRIMARY KEY (installation_id, `key`)");
     expect(schema).toContain("KEY email_verification_codes_lookup_idx (email(112), purpose, created_at)");
     expect(schema).toContain("PRIMARY KEY (plugin_id, nonce_hash)");
+    expect(schema).toContain("CREATE TABLE IF NOT EXISTS site_asset_chunks");
+    expect(schema).toContain("PRIMARY KEY (kind, chunk_index)");
     expect(schema).toContain("event_key VARCHAR(127) NOT NULL");
     expect(schema).not.toContain("VARCHAR(191)");
   });

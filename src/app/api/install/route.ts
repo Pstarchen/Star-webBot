@@ -38,17 +38,23 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ message: "安装参数不合法", issues: parsed.error.issues }, { status: 400 });
 
   let databaseInstallation: DatabaseInstallationHandle | null = null;
+  let stage = "parse_assets";
   try {
     const logo = parseImageDataUrl(parsed.data.logoDataUrl);
     const favicon = parseImageDataUrl(parsed.data.faviconDataUrl);
+    stage = "open_database";
     databaseInstallation = beginDatabaseInstallation(toDatabaseConfigurationInput(parsed.data.database));
+    stage = "persist_configuration";
     databaseInstallation.persist();
+    stage = "write_initial_state";
     const user = completeInstallation({
       ...parsed.data,
       logo,
       favicon,
     });
+    stage = "commit_installation";
     databaseInstallation.commit();
+    stage = "create_session";
     const response = NextResponse.json({ user }, { status: 201 });
     response.cookies.set(sessionCookieName, createSessionToken(user), {
       httpOnly: true,
@@ -61,7 +67,7 @@ export async function POST(request: Request) {
   } catch (error) {
     databaseInstallation?.rollback();
     const code = error instanceof Error ? error.message : "";
-    console.error("Database installation failed", { code: installationDatabaseErrorCode(error) });
+    console.error("Database installation failed", { stage, code: installationDatabaseErrorCode(error), name: error instanceof Error ? error.name : typeof error });
     if (code === "INSTALL_ALREADY_COMPLETED") return NextResponse.json({ message: "系统已完成初始化" }, { status: 409 });
     if (code === "INSTALL_ASSET_INVALID") return NextResponse.json({ message: "站点图片格式不支持" }, { status: 400 });
     if (code === "INSTALL_ASSET_TOO_LARGE") return NextResponse.json({ message: `站点图片不能超过 ${SITE_ASSET_MAX_LABEL}` }, { status: 400 });

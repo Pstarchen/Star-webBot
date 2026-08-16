@@ -38,6 +38,26 @@ type SettingsRow = {
   install_completed: number;
 };
 
+type SiteAsset = { mimeType: string; bytes: Uint8Array };
+type SiteAssetKind = "logo" | "favicon";
+
+// Keep every database packet well below the 1MB default used by older MySQL releases.
+const SITE_ASSET_CHUNK_BYTES = 192 * 1024;
+
+function replaceSiteAssetChunks(database: ReturnType<typeof getDatabase>, kind: SiteAssetKind, bytes?: Uint8Array) {
+  database.prepare("DELETE FROM site_asset_chunks WHERE kind = ?").run(kind);
+  if (!bytes?.length) return;
+  const insert = database.prepare("INSERT INTO site_asset_chunks (kind, chunk_index, data_blob) VALUES (?, ?, ?)");
+  for (let offset = 0, chunkIndex = 0; offset < bytes.length; offset += SITE_ASSET_CHUNK_BYTES, chunkIndex += 1) {
+    insert.run(kind, chunkIndex, Buffer.from(bytes.subarray(offset, offset + SITE_ASSET_CHUNK_BYTES)));
+  }
+}
+
+function chunkedSiteAsset(database: ReturnType<typeof getDatabase>, kind: SiteAssetKind) {
+  const rows = database.prepare("SELECT data_blob AS data FROM site_asset_chunks WHERE kind = ? ORDER BY chunk_index").all(kind) as Array<{ data: Uint8Array }>;
+  return rows.length ? Buffer.concat(rows.map((row) => Buffer.from(row.data))) : null;
+}
+
 function settingsRow() {
   return getDatabase().prepare("SELECT * FROM system_settings WHERE id = 1").get() as SettingsRow;
 }
@@ -229,8 +249,8 @@ export function completeInstallation(input: {
   adminName: string;
   adminEmail: string;
   adminPassword: string;
-  logo?: { mimeType: string; bytes: Uint8Array };
-  favicon?: { mimeType: string; bytes: Uint8Array };
+  logo?: SiteAsset;
+  favicon?: SiteAsset;
 }) {
   if (!installationStatus().needed) throw new Error("INSTALL_ALREADY_COMPLETED");
   const database = getDatabase();
@@ -252,9 +272,9 @@ export function completeInstallation(input: {
         site_description = ?,
         copyright_text = ?,
         site_logo_mime = ?,
-        site_logo_blob = ?,
+        site_logo_blob = NULL,
         site_favicon_mime = ?,
-        site_favicon_blob = ?,
+        site_favicon_blob = NULL,
         install_completed = 1,
         updated_by = ?,
         updated_at = ?
@@ -265,12 +285,12 @@ export function completeInstallation(input: {
       input.siteDescription,
       input.siteName,
       input.logo?.mimeType || null,
-      input.logo ? Buffer.from(input.logo.bytes) : null,
       input.favicon?.mimeType || null,
-      input.favicon ? Buffer.from(input.favicon.bytes) : null,
       adminId,
       now,
     );
+    replaceSiteAssetChunks(database, "logo", input.logo?.bytes);
+    replaceSiteAssetChunks(database, "favicon", input.favicon?.bytes);
     writeAuditLog(adminId, "system.install.complete", "system_settings", "1", { siteName: input.siteName });
     seedPostInstallationData(database);
   })();
@@ -315,15 +335,21 @@ export function getPaymentPublicConfig() {
   };
 }
 
-export function setSiteAsset(actor: SessionUser, kind: "logo" | "favicon", mimeType: string, bytes: Uint8Array) {
+export function setSiteAsset(actor: SessionUser, kind: SiteAssetKind, mimeType: string, bytes: Uint8Array) {
   if (actor.role !== "admin") throw new Error("ADMIN_REQUIRED");
   const columnPrefix = kind === "logo" ? "site_logo" : "site_favicon";
-  getDatabase().prepare(`UPDATE system_settings SET ${columnPrefix}_mime = ?, ${columnPrefix}_blob = ?, updated_by = ?, updated_at = ? WHERE id = 1`)
-    .run(mimeType, Buffer.from(bytes), actor.id, new Date().toISOString());
+  const database = getDatabase();
+  database.transaction(() => {
+    database.prepare(`UPDATE system_settings SET ${columnPrefix}_mime = ?, ${columnPrefix}_blob = NULL, updated_by = ?, updated_at = ? WHERE id = 1`)
+      .run(mimeType, actor.id, new Date().toISOString());
+    replaceSiteAssetChunks(database, kind, bytes);
+  })();
   writeAuditLog(actor.id, `system.${kind}.update`, "system_settings", "1", { mimeType, bytes: bytes.length });
 }
 
-export function getSiteAsset(kind: "logo" | "favicon") {
+export function getSiteAsset(kind: SiteAssetKind) {
   const columnPrefix = kind === "logo" ? "site_logo" : "site_favicon";
-  return getDatabase().prepare(`SELECT ${columnPrefix}_mime AS mime, ${columnPrefix}_blob AS data FROM system_settings WHERE id = 1`).get() as { mime: string | null; data: Buffer | null };
+  const database = getDatabase();
+  const legacy = database.prepare(`SELECT ${columnPrefix}_mime AS mime, ${columnPrefix}_blob AS data FROM system_settings WHERE id = 1`).get() as { mime: string | null; data: Buffer | null };
+  return { mime: legacy.mime, data: chunkedSiteAsset(database, kind) || legacy.data };
 }
