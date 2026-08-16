@@ -3,6 +3,8 @@ import { OfficialHome } from "@/components/official-home";
 import { getSession } from "@/lib/session";
 import { getPublicSiteSettings, installationStatus } from "@/lib/system-settings-service";
 
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   if (installationStatus().needed) redirect("/setup");
   const user = await getSession();

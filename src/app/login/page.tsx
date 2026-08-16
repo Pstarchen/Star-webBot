@@ -4,6 +4,8 @@ import { getSession } from "@/lib/session";
 import { qqLoginEnabled } from "@/lib/qq-login";
 import { getPublicAuthSettings, getPublicSiteSettings, installationStatus } from "@/lib/system-settings-service";
 
+export const dynamic = "force-dynamic";
+
 const qqLoginErrors: Record<string, string> = {
   session_expired: "登录状态已失效，请重新登录",
   qq_callback_invalid: "QQ 登录回调参数已失效，请重新发起登录",

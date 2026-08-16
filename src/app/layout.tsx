@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { getPublicSiteSettings } from "@/lib/system-settings-service";
 import "./globals.css";
 
+export const dynamic = "force-dynamic";
+
 export function generateMetadata(): Metadata {
   const site = getPublicSiteSettings();
   return {

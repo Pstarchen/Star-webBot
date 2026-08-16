@@ -6,6 +6,8 @@ import { getSession } from "@/lib/session";
 import { getPublicSiteSettings, installationStatus } from "@/lib/system-settings-service";
 import { listTeamMembers } from "@/lib/user-service";
 
+export const dynamic = "force-dynamic";
+
 export default async function ConsolePage() {
   if (installationStatus().needed) redirect("/setup");
   const user = await getSession();
