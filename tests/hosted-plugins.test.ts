@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { strToU8, zipSync } from "fflate";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import nextConfig from "../next.config";
 
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "starbot-hosted-plugin-test-"));
 const databasePath = path.join(temporaryDirectory, "starbot.db");
@@ -97,6 +98,12 @@ describe("hosted plugin packages", () => {
   it("accepts the controlled HTTP permission", () => {
     const parsed = packageModule.parseHostedPluginPackage(pluginPackage({ permissions: ["http:request"] }));
     expect(parsed.manifest.permissions).toEqual(["http:request"]);
+  });
+});
+
+describe("hosted plugin production bundling", () => {
+  it("loads QuickJS as a native server dependency", () => {
+    expect(nextConfig.serverExternalPackages).toContain("quickjs-emscripten");
   });
 });
 
