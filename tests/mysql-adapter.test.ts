@@ -80,7 +80,14 @@ mysqlDescribe("MySQL database adapter", () => {
 
     const recovered = databaseModule.getDatabase();
     expect(recovered.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 2 });
-    expect(recovered.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 2 });
+    expect(recovered.prepare(`
+      SELECT id FROM schema_migrations
+      WHERE id IN ('20260812_sdk_application_schema', '20260813_system_settings_and_billing')
+      ORDER BY id
+    `).all()).toEqual([
+      { id: "20260812_sdk_application_schema" },
+      { id: "20260813_system_settings_and_billing" },
+    ]);
     expect(sessionModule.authenticate("mysql-admin@test.local", "mysql-admin-password")).toMatchObject({ role: "admin" });
   });
 });
