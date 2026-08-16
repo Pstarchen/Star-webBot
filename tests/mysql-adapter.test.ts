@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const mysqlEnabled = process.env.MYSQL_TEST_DATABASE === "true";
@@ -8,19 +11,48 @@ let databaseModule: typeof import("@/lib/database");
 let eventRetentionModule: typeof import("@/lib/event-retention");
 let gatewayCoordinationModule: typeof import("@/lib/gateway-coordination");
 let sessionModule: typeof import("@/lib/session");
+let systemSettingsModule: typeof import("@/lib/system-settings-service");
+let configurationDirectory: string;
 
 mysqlDescribe("MySQL database adapter", () => {
   beforeAll(async () => {
-    process.env.DATABASE_PROVIDER = "mysql";
-    process.env.BOOTSTRAP_ADMIN_EMAIL = "mysql-admin@test.local";
-    process.env.BOOTSTRAP_ADMIN_PASSWORD = "mysql-admin-password";
-    [databaseModule, eventRetentionModule, gatewayCoordinationModule, sessionModule] = await Promise.all([
+    configurationDirectory = mkdtempSync(path.join(tmpdir(), "starbot-mysql-install-"));
+    delete process.env.DATABASE_PROVIDER;
+    delete process.env.BOOTSTRAP_ADMIN_EMAIL;
+    delete process.env.BOOTSTRAP_ADMIN_PASSWORD;
+    process.env.DATABASE_PATH = path.join(configurationDirectory, "starbot.db");
+    [databaseModule, eventRetentionModule, gatewayCoordinationModule, sessionModule, systemSettingsModule] = await Promise.all([
       import("@/lib/database"),
       import("@/lib/event-retention"),
       import("@/lib/gateway-coordination"),
       import("@/lib/session"),
+      import("@/lib/system-settings-service"),
     ]);
-    databaseModule.getDatabase();
+
+    const installation = databaseModule.beginDatabaseInstallation({
+      provider: "mysql",
+      host: process.env.MYSQL_HOST || "127.0.0.1",
+      port: Number(process.env.MYSQL_PORT || 3306),
+      user: process.env.MYSQL_USER || "",
+      password: process.env.MYSQL_PASSWORD || "",
+      database: process.env.MYSQL_DATABASE || "",
+      ssl: process.env.MYSQL_SSL === "true",
+    });
+    try {
+      installation.persist();
+      systemSettingsModule.completeInstallation({
+        siteName: "MySQL Test",
+        siteTagline: "Installation flow",
+        siteDescription: "Validates the complete MySQL installation flow.",
+        adminName: "MySQL Admin",
+        adminEmail: "mysql-admin@test.local",
+        adminPassword: "mysql-admin-password",
+      });
+      installation.commit();
+    } catch (error) {
+      installation.rollback();
+      throw error;
+    }
   });
 
   afterAll(() => {
@@ -28,9 +60,10 @@ mysqlDescribe("MySQL database adapter", () => {
     state.__starbotDatabase?.close();
     delete state.__starbotDatabase;
     delete state.__starbotDatabaseConfigurationKey;
+    if (configurationDirectory) rmSync(configurationDirectory, { recursive: true, force: true });
   });
 
-  it("creates the full schema and bootstrap membership", () => {
+  it("completes installation through a persisted MySQL configuration", () => {
     const database = databaseModule.getDatabase();
     expect(database.prepare("SELECT 1 AS connected").get()).toEqual({ connected: 1 });
     expect(database.prepare("SELECT id FROM membership_plans ORDER BY id").all()).toEqual([{ id: "free" }, { id: "pro" }, { id: "team" }]);
