@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Check, CheckCircle2, Copy, CreditCard, FileImage, Globe2, KeyRound, LoaderCircle, LockKeyhole, Mail, MessageCircle, ReceiptText, Save, Settings2, ShieldCheck, UploadCloud } from "lucide-react";
+import { Check, CheckCircle2, Copy, CreditCard, FileImage, Globe2, KeyRound, LoaderCircle, LockKeyhole, Mail, MessageCircle, ReceiptText, Save, Send, Settings2, ShieldCheck, UploadCloud } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,6 +40,7 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
   const [faviconFile, setFaviconFile] = useState<File | null>(null);
   const [secret, setSecret] = useState("");
   const [smtpPass, setSmtpPass] = useState("");
+  const [emailTestRecipient, setEmailTestRecipient] = useState("");
   const [epayKey, setEpayKey] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -48,6 +49,7 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
   async function load() {
     const settingsBody = await requestJson<{ settings: AdminSystemSettings }>("/api/system-settings", { cache: "no-store" });
     setSettings(settingsBody.settings);
+    setEmailTestRecipient((current) => current || settingsBody.settings.email.smtpFrom);
     if (area === "system") {
       const [plansBody, ordersBody] = await Promise.all([
         requestJson<{ plans: MembershipPlan[] }>("/api/membership-plans", { cache: "no-store" }),
@@ -73,6 +75,7 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
       ]);
     requests.then(([settingsBody, plansBody, ordersBody]) => {
         setSettings(settingsBody.settings);
+        setEmailTestRecipient((current) => current || settingsBody.settings.email.smtpFrom);
         setPlans(plansBody.plans);
         setOrders(ordersBody.orders);
       })
@@ -124,6 +127,15 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
       body: JSON.stringify({ section: "email", ...current.email, smtpPass: smtpPass || undefined }),
     });
     setSettings(body.settings); setSmtpPass("");
+    setEmailTestRecipient((current) => current || body.settings.email.smtpFrom);
+  }
+
+  async function testEmailConfiguration() {
+    await requestJson<{ recipient: string; sentAt: string }>("/api/system-settings/email-test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: emailTestRecipient.trim() }),
+    });
   }
 
   async function copyQQCallback() {
@@ -296,6 +308,23 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
                   {[["服务器", Boolean(settings.email.smtpHost)], ["发件邮箱", Boolean(settings.email.smtpFrom)], ["授权码", settings.email.smtpPassConfigured || Boolean(smtpPass)]].map(([label, ready]) => <div key={String(label)} className="flex items-center justify-between gap-3 text-xs"><span className="text-muted-foreground">{String(label)}</span><span className={ready ? "flex items-center gap-1 text-emerald-700" : "text-amber-700"}>{ready && <CheckCircle2 size={12} />}{ready ? "就绪" : "待配置"}</span></div>)}
                 </div>
                 <p className="mt-5 border-t pt-4 text-[11px] leading-5 text-muted-foreground">授权码加密保存，设置接口不会返回原始值。启用任一认证功能前必须完成发信配置。</p>
+                <div className="mt-5 border-t pt-4">
+                  <label className="block">
+                    <span className="block text-xs font-semibold">测试收件邮箱</span>
+                    <Input className="mt-2 h-9 mono-data text-xs" type="email" value={emailTestRecipient} onChange={(event) => setEmailTestRecipient(event.target.value)} placeholder="name@example.com" />
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-2 w-full"
+                    disabled={busy === "email-test" || !emailTestRecipient.trim() || !settings.email.smtpHost || !settings.email.smtpFrom || !settings.email.smtpPassConfigured}
+                    onClick={() => void run("email-test", testEmailConfiguration, `测试邮件已发送至 ${emailTestRecipient.trim()}`)}
+                  >
+                    {busy === "email-test" ? <LoaderCircle className="animate-spin" size={14} /> : <Send size={14} />}
+                    {busy === "email-test" ? "正在发送" : "发送测试邮件"}
+                  </Button>
+                  <p className="mt-2 text-[10px] leading-4 text-muted-foreground">使用最近一次保存的 SMTP 配置发送，不会使用尚未保存的表单内容。</p>
+                </div>
               </aside>
             </div>
             <div className="flex flex-col gap-3 border-t bg-muted/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">

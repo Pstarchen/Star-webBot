@@ -112,6 +112,40 @@ describe("authentication and membership", () => {
     expect(sessionModule.authenticateWithEmail(email)).toMatchObject({ id: user.id, email });
   });
 
+  it("sends an administrator email configuration test without exposing SMTP credentials", async () => {
+    const originalEncryptionKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    process.env.CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 31).toString("base64");
+    try {
+      const admin = sessionModule.authenticate("admin@test.local", "admin-password-2026");
+      const user = sessionModule.authenticate("user@example.com", "strong-password");
+      expect(admin).not.toBeNull();
+      expect(user).not.toBeNull();
+      systemSettingsModule.updateEmailSettings(admin!, {
+        registrationVerificationEnabled: true,
+        loginEnabled: true,
+        smtpHost: "smtp.example.com",
+        smtpPort: 587,
+        smtpSecure: false,
+        smtpStarttls: true,
+        smtpFrom: "noreply@example.com",
+        smtpUser: "noreply@example.com",
+        smtpPass: "smtp-test-secret",
+      });
+      const recipient = `smtp-test-${randomUUID()}@example.com`;
+      await expect(emailCodeModule.sendEmailConfigurationTest(user!, recipient)).rejects.toThrow("ADMIN_REQUIRED");
+      await expect(emailCodeModule.sendEmailConfigurationTest(admin!, recipient)).resolves.toMatchObject({ recipient });
+      expect(emailCodeModule.latestEmailConfigurationTestForTest(recipient)).toMatchObject({
+        kind: "configuration-test",
+        to: recipient,
+        subject: "StarBot 邮箱配置测试",
+      });
+      expect(JSON.stringify(systemSettingsModule.getAdminSystemSettings(admin!))).not.toContain("smtp-test-secret");
+    } finally {
+      if (originalEncryptionKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = originalEncryptionKey;
+    }
+  });
+
   it("allows admins to assign plans and denies regular users", () => {
     const admin = sessionModule.authenticate("admin@test.local", "admin-password-2026");
     const user = sessionModule.authenticate("user@example.com", "strong-password");

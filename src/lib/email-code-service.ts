@@ -12,13 +12,23 @@ const CODE_TTL_MS = 10 * 60 * 1000;
 const SEND_COOLDOWN_MS = 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
 
-type EmailOutboxEntry = {
+type VerificationEmailOutboxEntry = {
+  kind: "verification";
   to: string;
   purpose: EmailCodePurpose;
   code: string;
   subject: string;
   createdAt: string;
 };
+
+type ConfigurationTestEmailOutboxEntry = {
+  kind: "configuration-test";
+  to: string;
+  subject: string;
+  createdAt: string;
+};
+
+type EmailOutboxEntry = VerificationEmailOutboxEntry | ConfigurationTestEmailOutboxEntry;
 
 type GlobalEmailOutbox = typeof globalThis & {
   __starbotEmailOutbox?: EmailOutboxEntry[];
@@ -175,7 +185,7 @@ async function deliverCode(email: string, purpose: EmailCodePurpose, code: strin
   if (process.env.EMAIL_CODE_TRANSPORT === "memory" || process.env.NODE_ENV === "test") {
     const state = globalThis as GlobalEmailOutbox;
     state.__starbotEmailOutbox ||= [];
-    state.__starbotEmailOutbox.push({ to: email, purpose, code, subject, createdAt: new Date().toISOString() });
+    state.__starbotEmailOutbox.push({ kind: "verification", to: email, purpose, code, subject, createdAt: new Date().toISOString() });
     return;
   }
 
@@ -187,7 +197,43 @@ async function deliverCode(email: string, purpose: EmailCodePurpose, code: strin
 export function latestEmailCodeForTest(email: string, purpose: EmailCodePurpose) {
   if (process.env.NODE_ENV !== "test") return null;
   const state = globalThis as GlobalEmailOutbox;
-  return [...(state.__starbotEmailOutbox || [])].reverse().find((entry) => entry.to === normalizeEmail(email) && entry.purpose === purpose) || null;
+  return [...(state.__starbotEmailOutbox || [])].reverse().find((entry): entry is VerificationEmailOutboxEntry => (
+    entry.kind === "verification" && entry.to === normalizeEmail(email) && entry.purpose === purpose
+  )) || null;
+}
+
+export function latestEmailConfigurationTestForTest(email: string) {
+  if (process.env.NODE_ENV !== "test") return null;
+  const state = globalThis as GlobalEmailOutbox;
+  return [...(state.__starbotEmailOutbox || [])].reverse().find((entry): entry is ConfigurationTestEmailOutboxEntry => (
+    entry.kind === "configuration-test" && entry.to === normalizeEmail(email)
+  )) || null;
+}
+
+export async function sendEmailConfigurationTest(actor: SessionUser, recipient: string) {
+  if (actor.role !== "admin") throw new Error("ADMIN_REQUIRED");
+  const email = normalizeEmail(recipient);
+  const config = getEmailConfig();
+  if (!config.configured) throw new Error("EMAIL_SMTP_NOT_CONFIGURED");
+  const subject = "StarBot 邮箱配置测试";
+  const text = [
+    "这是一封 StarBot 邮箱配置测试邮件。",
+    "",
+    "如果你收到此邮件，说明当前 SMTP 服务器、发件邮箱和授权信息可以正常发送邮件。",
+    `测试时间：${new Date().toISOString()}`,
+  ].join("\n");
+  const sentAt = new Date().toISOString();
+
+  if (process.env.EMAIL_CODE_TRANSPORT === "memory" || process.env.NODE_ENV === "test") {
+    const state = globalThis as GlobalEmailOutbox;
+    state.__starbotEmailOutbox ||= [];
+    state.__starbotEmailOutbox.push({ kind: "configuration-test", to: email, subject, createdAt: sentAt });
+  } else {
+    await sendSmtpMail(config, email, subject, text);
+  }
+
+  writeAuditLog(actor.id, "system.email.test", "system_settings", "1", { recipient: email });
+  return { recipient: email, sentAt };
 }
 
 export async function sendEmailVerificationCode(input: { email: string; purpose: EmailCodePurpose }) {

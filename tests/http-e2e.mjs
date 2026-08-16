@@ -210,6 +210,9 @@ async function runAssertions() {
   assert.equal(anonymousPluginCenter.status, 401);
   results.push("anonymous plugin center access is rejected");
 
+  const anonymousEmailTest = await fetch(`${baseUrl}/api/system-settings/email-test`, { method: "POST" });
+  assert.equal(anonymousEmailTest.status, 401);
+
   const adminLogin = await jsonResponse("/api/auth/login", {
     method: "POST",
     headers: originHeaders,
@@ -241,6 +244,16 @@ async function runAssertions() {
   assert.equal(emailSettings.body.settings.email.smtpPassConfigured, true);
   assert.equal(JSON.stringify(emailSettings.body).includes("e2e-smtp-password"), false);
   results.push("administrator enables email verification without exposing SMTP secrets");
+
+  const emailConfigurationTest = await jsonResponse("/api/system-settings/email-test", {
+    method: "POST",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({ email: adminEmail }),
+  });
+  assert.equal(emailConfigurationTest.response.status, 200);
+  assert.equal(emailConfigurationTest.body.recipient, adminEmail);
+  assert.ok(receivedEmails.some((message) => message.includes(adminEmail) && message.includes("邮箱配置测试邮件")));
+  results.push("administrator can send an SMTP configuration test email");
 
   const registrationWithoutCode = await jsonResponse("/api/auth/register", {
     method: "POST",
@@ -297,6 +310,18 @@ async function runAssertions() {
 
   const regularSettings = await jsonResponse("/api/system-settings", { headers: { Cookie: userCookie } });
   assert.equal(regularSettings.response.status, 403);
+  const regularEmailTest = await jsonResponse("/api/system-settings/email-test", {
+    method: "POST",
+    headers: { ...originHeaders, Cookie: userCookie },
+    body: JSON.stringify({ email: userEmail }),
+  });
+  assert.equal(regularEmailTest.response.status, 403);
+  const crossOriginEmailTest = await jsonResponse("/api/system-settings/email-test", {
+    method: "POST",
+    headers: { Origin: "https://attacker.example", "Content-Type": "application/json", Cookie: adminCookie },
+    body: JSON.stringify({ email: adminEmail }),
+  });
+  assert.equal(crossOriginEmailTest.response.status, 403);
   const regularOrders = await jsonResponse("/api/membership/orders", { headers: { Cookie: userCookie } });
   assert.equal(regularOrders.response.status, 403);
   const deniedSiteUpdate = await jsonResponse("/api/system-settings", {
@@ -315,7 +340,7 @@ async function runAssertions() {
     }),
   });
   assert.equal(deniedSiteUpdate.response.status, 403);
-  results.push("regular users cannot read or mutate administrative billing settings");
+  results.push("regular users and cross-origin requests cannot test administrative email settings");
 
   const siteUpdate = await jsonResponse("/api/system-settings", {
     method: "PATCH",
