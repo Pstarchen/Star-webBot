@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { captureDatabaseConfigurationFile, databaseConfigurationFromInput, databaseConfigurationIsEnvironmentManaged, databaseConfigurationKey, getDatabaseConfiguration, persistDatabaseConfiguration, restoreDatabaseConfigurationFile, type DatabaseConfiguration, type DatabaseConfigurationInput } from "@/lib/database-config";
-import { MYSQL_SCHEMA } from "@/lib/mysql-schema";
+import { mysqlIndexedIdentifierLengthForVersion, mysqlSchemaForVersion } from "@/lib/mysql-schema";
 import { createMySqlDatabase, type PlatformDatabase } from "@/lib/mysql-sync";
 import { hashPassword } from "@/lib/password";
 
@@ -577,7 +577,10 @@ function migrateSqlite(database: Database.Database) {
 }
 
 function migrateMySql(database: PlatformDatabase) {
-  database.exec(MYSQL_SCHEMA);
+  const versionRow = database.prepare("SELECT VERSION() AS version").get() as { version?: string } | undefined;
+  const version = versionRow?.version || "";
+  const indexedIdentifierLength = mysqlIndexedIdentifierLengthForVersion(version);
+  database.exec(mysqlSchemaForVersion(version));
   const pendingReviewColumn = database.prepare(`
     SELECT EXTRA AS extra FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'plugin_market_reviews' AND column_name = 'pending_project_id'
@@ -590,9 +593,9 @@ function migrateMySql(database: PlatformDatabase) {
     `).get();
     if (generatedIndex) database.exec("ALTER TABLE plugin_market_reviews DROP INDEX plugin_market_reviews_pending_idx");
     database.exec("ALTER TABLE plugin_market_reviews DROP COLUMN pending_project_id");
-    database.exec("ALTER TABLE plugin_market_reviews ADD COLUMN pending_project_id VARCHAR(191) NULL AFTER status");
+    database.exec(`ALTER TABLE plugin_market_reviews ADD COLUMN pending_project_id VARCHAR(${indexedIdentifierLength}) NULL AFTER status`);
   } else if (!pendingReviewColumn) {
-    database.exec("ALTER TABLE plugin_market_reviews ADD COLUMN pending_project_id VARCHAR(191) NULL AFTER status");
+    database.exec(`ALTER TABLE plugin_market_reviews ADD COLUMN pending_project_id VARCHAR(${indexedIdentifierLength}) NULL AFTER status`);
   }
   database.prepare("UPDATE plugin_market_reviews SET pending_project_id = project_id WHERE status = 'pending' AND pending_project_id IS NULL").run();
   const pendingReviewIndex = database.prepare(`
