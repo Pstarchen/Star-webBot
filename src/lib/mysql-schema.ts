@@ -172,7 +172,9 @@ CREATE TABLE IF NOT EXISTS plugin_market_reviews (
   reviewed_by VARCHAR(191),
   requested_at VARCHAR(40) NOT NULL,
   reviewed_at VARCHAR(40),
-  UNIQUE KEY plugin_market_reviews_pending_idx ((CASE WHEN status = 'pending' THEN project_id ELSE NULL END)),
+  pending_project_id VARCHAR(191)
+    GENERATED ALWAYS AS (CASE WHEN status = 'pending' THEN project_id ELSE NULL END) STORED,
+  UNIQUE KEY plugin_market_reviews_pending_idx (pending_project_id),
   KEY plugin_market_reviews_status_requested_idx (status, requested_at),
   CONSTRAINT plugin_market_reviews_project_fk FOREIGN KEY (project_id) REFERENCES plugin_projects(id) ON DELETE CASCADE,
   CONSTRAINT plugin_market_reviews_version_fk FOREIGN KEY (version_id) REFERENCES plugin_versions(id) ON DELETE CASCADE,
