@@ -406,17 +406,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `;
 
-export function mysqlIndexedIdentifierLengthForVersion(version: string): 64 | 191 {
-  const match = version.trim().match(/^(\d+)\.(\d+)/);
-  if (!match) return 191;
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  if (/mariadb/i.test(version)) return major < 10 || (major === 10 && minor <= 1) ? 64 : 191;
-  return major < 5 || (major === 5 && minor <= 6) ? 64 : 191;
-}
+export type MySqlIndexedIdentifierLength = 64 | 191;
 
-export function mysqlSchemaForVersion(version: string) {
-  if (mysqlIndexedIdentifierLengthForVersion(version) === 191) return MYSQL_SCHEMA;
+export function mysqlSchemaForIndexedIdentifierLength(indexedIdentifierLength: MySqlIndexedIdentifierLength) {
+  if (indexedIdentifierLength === 191) return MYSQL_SCHEMA;
   return MYSQL_SCHEMA
     .replaceAll("VARCHAR(191)", "VARCHAR(64)")
     .replaceAll("email VARCHAR(255)", "email VARCHAR(160)")

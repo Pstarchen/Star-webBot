@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { captureDatabaseConfigurationFile, databaseConfigurationFromInput, databaseConfigurationIsEnvironmentManaged, databaseConfigurationKey, getDatabaseConfiguration, persistDatabaseConfiguration, restoreDatabaseConfigurationFile, type DatabaseConfiguration, type DatabaseConfigurationInput } from "@/lib/database-config";
-import { mysqlIndexedIdentifierLengthForVersion, mysqlSchemaForVersion } from "@/lib/mysql-schema";
+import { mysqlSchemaForIndexedIdentifierLength, type MySqlIndexedIdentifierLength } from "@/lib/mysql-schema";
 import { createMySqlDatabase, type PlatformDatabase } from "@/lib/mysql-sync";
 import { hashPassword } from "@/lib/password";
 
@@ -576,11 +576,26 @@ function migrateSqlite(database: Database.Database) {
   database.prepare("INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)").run("20260813_system_settings_and_billing", now);
 }
 
+function existingMySqlIndexedIdentifierLength(database: PlatformDatabase): MySqlIndexedIdentifierLength {
+  const column = database.prepare(`
+    SELECT CHARACTER_MAXIMUM_LENGTH AS identifier_length,
+      CHARACTER_SET_NAME AS character_set_name,
+      COLLATION_NAME AS collation_name
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'id'
+  `).get() as { identifier_length: number; character_set_name: string; collation_name: string } | undefined;
+  if (!column) return 64;
+  if (column.character_set_name !== "utf8mb4" || column.collation_name !== "utf8mb4_unicode_ci") {
+    throw new Error("MYSQL_EXISTING_SCHEMA_INCOMPATIBLE");
+  }
+  const length = Number(column.identifier_length);
+  if (length !== 64 && length !== 191) throw new Error("MYSQL_EXISTING_SCHEMA_INCOMPATIBLE");
+  return length;
+}
+
 function migrateMySql(database: PlatformDatabase) {
-  const versionRow = database.prepare("SELECT VERSION() AS version").get() as { version?: string } | undefined;
-  const version = versionRow?.version || "";
-  const indexedIdentifierLength = mysqlIndexedIdentifierLengthForVersion(version);
-  database.exec(mysqlSchemaForVersion(version));
+  const indexedIdentifierLength = existingMySqlIndexedIdentifierLength(database);
+  database.exec(mysqlSchemaForIndexedIdentifierLength(indexedIdentifierLength));
   const pendingReviewColumn = database.prepare(`
     SELECT EXTRA AS extra FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'plugin_market_reviews' AND column_name = 'pending_project_id'

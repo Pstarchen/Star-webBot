@@ -56,4 +56,31 @@ mysqlDescribe("MySQL database adapter", () => {
     expect(gatewayCoordinationModule.acquireGatewayLease(botId, Date.now())).toBe(true);
     expect(gatewayCoordinationModule.renewGatewayLease(botId, Date.now())).toBe(true);
   });
+
+  it("recovers when a previous initialization stopped after creating users", () => {
+    const database = databaseModule.getDatabase();
+    const tables = database.prepare(`
+      SELECT TABLE_NAME AS table_name FROM information_schema.tables
+      WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
+    `).all() as Array<{ table_name: string }>;
+    database.exec("SET FOREIGN_KEY_CHECKS = 0");
+    try {
+      for (const { table_name: tableName } of tables) {
+        if (tableName === "users") continue;
+        if (!/^[a-z0-9_]+$/.test(tableName)) throw new Error("MYSQL_TEST_TABLE_NAME_INVALID");
+        database.exec(`DROP TABLE \`${tableName}\``);
+      }
+    } finally {
+      database.exec("SET FOREIGN_KEY_CHECKS = 1");
+    }
+    const state = globalThis as typeof globalThis & { __starbotDatabase?: { close(): void }; __starbotDatabaseConfigurationKey?: string };
+    state.__starbotDatabase?.close();
+    delete state.__starbotDatabase;
+    delete state.__starbotDatabaseConfigurationKey;
+
+    const recovered = databaseModule.getDatabase();
+    expect(recovered.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 2 });
+    expect(recovered.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 2 });
+    expect(sessionModule.authenticate("mysql-admin@test.local", "mysql-admin-password")).toMatchObject({ role: "admin" });
+  });
 });

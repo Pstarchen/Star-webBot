@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { installationDatabaseErrorCode, installationDatabaseErrorMessage } from "@/lib/install-database-schema";
-import { MYSQL_SCHEMA, mysqlIndexedIdentifierLengthForVersion, mysqlSchemaForVersion } from "@/lib/mysql-schema";
+import { MYSQL_SCHEMA, mysqlSchemaForIndexedIdentifierLength } from "@/lib/mysql-schema";
 
 describe("MySQL schema compatibility", () => {
   it("uses a version-independent nullable marker for the pending review constraint", () => {
@@ -10,9 +10,8 @@ describe("MySQL schema compatibility", () => {
     expect(MYSQL_SCHEMA).not.toMatch(/\bGENERATED\s+ALWAYS\b/);
   });
 
-  it("uses compact indexed columns within the MySQL 5.6 utf8mb4 key limit", () => {
-    const schema = mysqlSchemaForVersion("5.6.51");
-    expect(mysqlIndexedIdentifierLengthForVersion("5.6.51")).toBe(64);
+  it("uses compact indexed columns for every fresh MySQL-compatible database", () => {
+    const schema = mysqlSchemaForIndexedIdentifierLength(64);
     expect(schema).toContain("id VARCHAR(64) PRIMARY KEY");
     expect(schema).toContain("email VARCHAR(160) NOT NULL UNIQUE");
     expect(schema).toContain("token_hash VARCHAR(64) NOT NULL UNIQUE");
@@ -23,16 +22,14 @@ describe("MySQL schema compatibility", () => {
     expect(schema).not.toContain("VARCHAR(191)");
   });
 
-  it("preserves the existing schema for MySQL 5.7 and newer", () => {
-    expect(mysqlSchemaForVersion("5.7.44")).toBe(MYSQL_SCHEMA);
-    expect(mysqlSchemaForVersion("8.4.6")).toBe(MYSQL_SCHEMA);
-    expect(mysqlIndexedIdentifierLengthForVersion("10.1.48-MariaDB")).toBe(64);
-    expect(mysqlIndexedIdentifierLengthForVersion("10.2.44-MariaDB")).toBe(191);
+  it("preserves an existing 191-character schema during upgrades", () => {
+    expect(mysqlSchemaForIndexedIdentifierLength(191)).toBe(MYSQL_SCHEMA);
   });
 
   it("reports unsupported MySQL syntax without exposing connection details", () => {
     expect(installationDatabaseErrorMessage(new Error("ER_PARSE_ERROR: syntax error"))).toBe("当前 MySQL 版本与表结构不兼容，请联系管理员升级部署程序");
     expect(installationDatabaseErrorMessage(new Error("ER_TOO_LONG_KEY: key is too long"))).toBe("当前 MySQL 版本与表结构不兼容，请联系管理员升级部署程序");
+    expect(installationDatabaseErrorMessage(new Error("MYSQL_EXISTING_SCHEMA_INCOMPATIBLE"))).toBe("目标数据库中已有不兼容表结构，请使用空数据库或联系管理员迁移现有数据");
     expect(installationDatabaseErrorCode(new Error("ER_PARSE_ERROR: syntax error near password=secret"))).toBe("ER_PARSE_ERROR");
   });
 });
