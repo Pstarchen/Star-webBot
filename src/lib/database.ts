@@ -744,12 +744,14 @@ function seedOfficialPlugins(database: PlatformDatabase) {
         (id, project_id, version, manifest_json, entry_code, readme, package_sha256, package_size, validation_json, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'active', ?)
     `).run(versionId, projectId, manifest.version, JSON.stringify(manifest), entryCode, "# 关键词自动回复\n\n安装后配置触发关键词和回复内容即可。", "builtin:keyword-reply:1.0.0", JSON.stringify({ source: "builtin", scanner: "trusted" }), now);
-    database.prepare(`
-      INSERT OR IGNORE INTO plugin_market_listings
-        (project_id, version_id, featured, price_cents, published_by, published_at, updated_at)
-      SELECT ?, ?, 1, 0, ?, ?, ?
-      WHERE EXISTS (SELECT 1 FROM plugin_projects WHERE id = ? AND status = 'published')
-    `).run(projectId, versionId, owner.id, now, now, projectId);
+    const publishedProject = database.prepare("SELECT 1 AS found FROM plugin_projects WHERE id = ? AND status = 'published'").get(projectId);
+    if (publishedProject) {
+      database.prepare(`
+        INSERT OR IGNORE INTO plugin_market_listings
+          (project_id, version_id, featured, price_cents, published_by, published_at, updated_at)
+        VALUES (?, ?, 1, 0, ?, ?, ?)
+      `).run(projectId, versionId, owner.id, now, now);
+    }
   })();
 }
 
