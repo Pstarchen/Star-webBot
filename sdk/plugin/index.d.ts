@@ -6,6 +6,7 @@ export type StarBotEvent<T = Record<string, unknown>> = {
 
 export type StarBotPluginConfigValue = string | number | boolean;
 export type StarBotQQApiResult<T = unknown> = { body: T; traceId: string | null };
+export type StarBotHttpResult<T = unknown> = { url: string; status: number; ok: boolean; headers: Record<string, string>; body: T };
 export type QQOpenApiEndpointId = 'deleteChannel' | 'getChannel' | 'getGuild' | 'updateChannel' | 'getGateway' | 'listGuildChannels' | 'createGuildChannel' | 'acknowledgeInteraction' | 'generateUrlLink' | 'getGlobalMenu' | 'updateGlobalMenu' | 'createCommandPanel' | 'listCommandPanels' | 'deleteCommandPanel' | 'getCommandPanel' | 'updateCommandPanelTarget' | 'updateCommandPanel' | 'getBotProfile' | 'prepareGroupMediaUpload' | 'finishGroupMediaPart' | 'listBotGuilds' | 'approveGroupJoinRequest' | 'getBotGroupState' | 'listGroupJoinRequests' | 'getGroupInfo' | 'uploadGroupMedia' | 'sendGroupMessage' | 'recallGroupMessage' | 'getGroupMuteSettings' | 'setGroupMemberMute' | 'createGroupJoinApprovalStrategy' | 'listGroupJoinApprovalStrategies' | 'updateGroupJoinApprovalStrategy' | 'deleteGroupJoinApprovalStrategy' | 'executeGroupJoinApprovalStrategy' | 'finishC2CMediaPart' | 'updateGroupJoinApprovalWhitelist' | 'prepareC2CMediaUpload' | 'uploadC2CMedia' | 'sendC2CMessage' | 'recallC2CMessage' | 'sendC2CStreamMessage';
 export type QQOpenApiQueryValue = string | number | bigint | boolean | null | undefined;
 export type QQOpenApiQuery = Record<string, QQOpenApiQueryValue | readonly QQOpenApiQueryValue[]>;
@@ -29,6 +30,13 @@ export type StarBotPluginSdk<TConfig extends Record<string, StarBotPluginConfigV
     getGroupMuteSettings<T = unknown>(groupOpenid: string): Promise<StarBotQQApiResult<T>>;
     muteGroupMember<T = unknown>(groupOpenid: string, memberOpenid: string, muteExpireAt: string, operation?: "add" | "update"): Promise<StarBotQQApiResult<T>>;
     unmuteGroupMember<T = unknown>(groupOpenid: string, memberOpenid: string): Promise<StarBotQQApiResult<T>>;
+  };
+  readonly http: {
+    request<T = unknown>(url: string, options?: {
+      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+      headers?: Record<string, string>;
+      body?: unknown;
+    }): Promise<StarBotHttpResult<T>>;
   };
   readonly kv: {
     get<T = unknown>(key: string, fallback?: T): T;

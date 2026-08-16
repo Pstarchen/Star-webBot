@@ -54,6 +54,7 @@ export const hostedPluginManifestSchema = z.object({
     "reply:ark",
     "reply:keyboard",
     "qq:api",
+    "http:request",
     "storage:kv",
     "log:write",
   ])).max(12).default([]),

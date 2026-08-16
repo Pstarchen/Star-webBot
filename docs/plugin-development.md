@@ -2,9 +2,17 @@
 
 StarBot 插件由开发者在本地编写并构建为 ZIP 包，再导入平台。平台负责版本管理、安装到机器人、配置、启停、事件分发和 QQ API 调用；插件不会获得机器人 Client Secret，也不需要部署 Webhook 或长期运行独立进程。
 
+## 适用范围与 QQ API v2
+
+本文面向使用 `sdk/plugin` 的托管插件。StarBot 接收 QQ 事件后按清单过滤事件，在 QuickJS 沙箱中调用插件，再由平台代插件访问 QQ OpenAPI 或执行回复动作。
+
+QQ 官方当前使用 `https://api.bot.qq.com` 作为统一 OpenAPI 地址，采用 `Authorization: QQBot ACCESS_TOKEN` 鉴权。`access_token` 默认有效期为 2 小时，官方要求只能在服务端使用。StarBot 负责使用机器人 AppID 和 Client Secret 获取、缓存并刷新凭证；插件只提交相对路径，不得把 AppID、Client Secret 或 Access Token 写入源码、清单、日志或插件包。
+
+QQ 返回的用户、群、频道 OpenID 均与机器人 AppID 相关，不应跨机器人直接复用。接口失败时应记录 HTTP 状态和 Trace ID；QQ 官方说明错误文案可能调整，不应根据 `message` 文本编写业务分支。
+
 ## 快速开始
 
-仓库提供插件 SDK 和构建工具：
+准备 Node.js 20 或更高版本。仓库提供插件 SDK 和构建工具：
 
 ```powershell
 npm install ./sdk/plugin
@@ -88,7 +96,7 @@ StarBot.definePlugin({
 });
 ```
 
-`onEvent` 支持同步或异步处理器。插件可以 `await sdk.qq.*` 读取 QQ 的响应体和 Trace ID，但不能使用定时器、Node.js 模块、文件系统或直接网络请求。网络访问只允许通过平台注入的 QQ SDK，并受清单权限、路径校验和超时限制。
+`onEvent` 支持同步或异步处理器。插件可以 `await sdk.qq.*` 读取 QQ 的响应体和 Trace ID，也可以在声明权限后通过 `sdk.http.request` 访问公开 HTTP 服务。插件不能使用定时器、Node.js 模块、文件系统、环境变量、原生 `fetch` 或套接字；所有网络访问必须经过平台注入的受控 SDK。
 
 事件结构：
 
@@ -141,11 +149,33 @@ const requests = await sdk.qq.callEndpoint(
 );
 ```
 
-`sdk.qq.callEndpoint(endpointId, pathParams, body, query)` 覆盖官方当前自动生成目录的 34 个接口并负责路径参数编码；`sdk.qq.request(method, path, body)` 可调用频道扩展接口及官方后续新增的 JSON REST 接口。两者都返回 `{ body, traceId }`。只有声明 `qq:api` 权限的插件可以调用，平台会在网络请求前检查权限，只接受 QQ Bot API 相对路径，并拒绝外部 URL 和路径穿越。
+`sdk.qq.callEndpoint(endpointId, pathParams, body, query)` 覆盖平台内置的官方端点目录并负责路径参数编码；`sdk.qq.request(method, path, body)` 可调用频道扩展接口及官方后续新增的 JSON REST 接口。两者都返回 `{ body, traceId }`。只有声明 `qq:api` 权限的插件可以调用，平台会在网络请求前检查权限，只接受 QQ Bot API 相对路径，并拒绝外部 URL 和路径穿越。
 
-通用方法覆盖 QQ 官方文档当前及后续新增的 JSON REST 接口，包括机器人、群聊、频道、成员、身份组、消息、公告、日程和互动等能力。远程 Node SDK 另提供 `callMultipart(path, formData)` 处理官方文件上传接口；托管插件不能直接读取宿主文件系统或自行联网。
+通用方法覆盖 QQ 官方文档当前及后续新增的 JSON REST 接口，包括机器人、群聊、频道、成员、身份组、消息、公告、日程和互动等能力。远程 Node SDK 另提供 `callMultipart(path, formData)` 处理官方文件上传接口；托管插件不能直接读取宿主文件系统，也不能绕过受控 SDK 自行联网。
+
+QQ OpenAPI 调用由平台统一补充 `Authorization` 请求头。官方成功响应的业务数据位于 `body`，Trace ID 优先取自 `X-Tps-trace-ID` 响应头，其次取响应体 `trace_id`。遇到 HTTP 429 时应减少插件调用频率，不要在同一次事件处理中无界重试。
 
 普通 QQ 群成员禁言使用 `/v2/groups/{group_openid}/restrict_chat_setting`，与 QQ 频道的 `/guilds/{guild_id}/members/{user_id}/mute` 不是同一接口。机器人必须是该群管理员；只能禁言普通成员，不能禁言群主、管理员或机器人。`mute_expire_at` 使用 RFC3339 时间。撤回单聊或群聊消息时，QQ 官方限制消息发送后 2 分钟内可撤回。最终可调用范围仍由 QQ 开放平台授权和机器人所在会话权限决定。
+
+### 受控外部 HTTP
+
+声明 `http:request` 后，可以访问公开的 HTTP/HTTPS 服务：
+
+```js
+const response = await sdk.http.request("https://example.com/api/status", {
+  method: "POST",
+  headers: { "x-client": "starbot-plugin" },
+  body: { eventType: event.type }
+});
+
+if (!response.ok) {
+  sdk.log.warn("external api failed", response.status);
+}
+```
+
+返回值为 `{ url, status, ok, headers, body }`。JSON 响应会自动解析，其他响应按文本返回。该能力拒绝 URL 内嵌凭据、localhost、内网/保留地址和危险请求头；最多跟随 3 次重定向，跨域重定向会移除 `authorization` 和 `cookie`。URL 最长 2,000 字符，请求体最大 32KB，响应体最大 64KB，最多 20 个请求头。
+
+外部 HTTP 与 QQ OpenAPI 是两套权限：访问 QQ 必须使用 `sdk.qq`，不要用 `sdk.http` 绕过平台的 QQ 凭据管理。平台不会自动为外部服务注入凭据；不要在源码或插件包内硬编码第三方密钥。
 
 ### 插件 KV
 
@@ -175,6 +205,7 @@ sdk.stopPropagation();
 | `reply:ark` | ARK 回复 |
 | `reply:keyboard` | keyboard 回复 |
 | `qq:api` | 调用受控 QQ OpenAPI 并读取响应 |
+| `http:request` | 访问经过 SSRF 防护的公开 HTTP/HTTPS 服务 |
 | `storage:kv` | 使用安装级 KV |
 | `log:write` | 写入插件运行日志 |
 
@@ -184,11 +215,20 @@ sdk.stopPropagation();
 
 - QuickJS WebAssembly 隔离运行，不在 Next.js 主进程中 `import()` 插件代码。
 - 单段插件代码 CPU 截止时间 150ms、包含 QQ 等待在内的墙钟时间 30 秒、内存 16MB、栈 512KB。
-- 单次最多 12 个动作或 QQ 请求、30 条日志，输入、输出和单个 QQ 响应 JSON 各最大 64KB。
+- 单次最多 12 个回复/KV 动作或网络请求、30 条日志，输入、输出、单个 QQ 响应和外部 HTTP 响应各最大 64KB。
 - ZIP 最大 2MB、最多 40 个文件、单文件最大 1MB、总解压大小最大 4MB。
 - 连续 5 次失败后自动停用该安装实例，需要用户检查错误后手动重新启用。
 
-这些限制用于保护共享平台，不代表插件可以处理所有长耗时任务。需要外部服务时，应通过管理员审核的受控能力扩展，而不是尝试在插件脚本中直接联网。
+这些限制用于保护共享平台，不代表插件可以处理所有长耗时任务。访问外部服务时必须使用 `sdk.http.request`，并在清单中显式声明权限。
+
+## 错误处理与排查
+
+1. 在“插件中心 -> 我的插件”确认安装实例已启用，且机器人在线。
+2. 检查清单是否声明了实际调用所需的权限；`PLUGIN_PERMISSION_DENIED:*` 表示权限缺失。
+3. 检查事件类型是否包含在 `events` 中，配置项是否已经填写。
+4. QQ 调用失败时记录 HTTP 状态和 Trace ID，再对照官方错误码；不要依赖错误文案判断。
+5. HTTP 429 表示触发限频，应降低请求频率；5xx 可在后续事件中有限重试，不要在单次处理器内循环重试。
+6. 连续 5 次运行失败后实例会自动停用。修复代码或配置、发布新版本后再手动启用。
 
 ## 版本与市场
 
@@ -202,3 +242,11 @@ sdk.stopPropagation();
 ## 兼容远程应用
 
 旧版 `sdk/node`、`/api/plugins` 与 `/api/plugin-runtime/*` 长轮询接口暂时保留，供已有外部进程迁移使用。它们属于“远程应用”兼容能力，不是当前插件商店和托管插件开发模型。新插件应使用 `sdk/plugin` 构建并直接导入平台。
+
+## 参考资料
+
+- [QQ 机器人 API v2](https://bot.q.qq.com/wiki/develop/api-v2/)
+- [QQ 获取访问凭证](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/access-token.html)
+- [QQ API 调用指南](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/api-call-guide.html)
+- 仓库示例：`examples/hosted-plugin`
+- SDK 类型：`sdk/plugin/index.d.ts`

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
   BookOpen,
@@ -12,6 +13,8 @@ import {
   Download,
   FileJson2,
   FileUp,
+  ExternalLink,
+  Globe2,
   MessageSquareReply,
   PackageCheck,
   Play,
@@ -96,7 +99,8 @@ function mediaFileAccept(fileType: "1" | "2" | "3" | "4") {
 const capabilities = [
   [MessageSquareReply, "回复消息", "文本、Markdown、Ark 与键盘"],
   [Database, "保存状态", "按安装实例隔离的 KV 存储"],
-  [Code2, "调用 QQ API", "34 个官方端点与通用请求均返回响应"],
+  [Code2, "调用 QQ API", "内置端点目录与通用请求均返回响应"],
+  [Globe2, "访问外部 API", "受限 HTTP 请求与 SSRF 防护"],
   [ShieldCheck, "隔离执行", "QuickJS 沙箱、超时和动作数量限制"],
 ];
 
@@ -264,11 +268,14 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
         description="开发托管插件，并使用机器人凭据调试 QQ Bot API v2。"
         action={(
           <div className="flex flex-wrap gap-2">
-            <a href="/downloads/daily-checkin-demo.zip" download className={cn(buttonVariants({ variant: "default" }))}>
+            <Link href="/docs/plugin-development" className={cn(buttonVariants({ variant: "default" }))}>
+              <BookOpen size={15} />插件开发文档
+            </Link>
+            <a href="/downloads/daily-checkin-demo.zip" download className={cn(buttonVariants({ variant: "outline" }))}>
               <Download size={15} />下载测试插件
             </a>
             <a href="https://bot.q.qq.com/wiki/develop/api-v2/" target="_blank" rel="noreferrer" className={cn(buttonVariants({ variant: "outline" }))}>
-              <BookOpen size={15} />QQ 官方文档
+              <ExternalLink size={15} />QQ 官方文档
             </a>
           </div>
         )}

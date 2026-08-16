@@ -2,6 +2,7 @@ import "server-only";
 import { getQuickJS, shouldInterruptAfterDeadline } from "quickjs-emscripten";
 import { z } from "zod";
 import { QQ_OPENAPI_ENDPOINTS } from "@/lib/qq-openapi-catalog";
+import type { PluginHttpRequest } from "@/lib/plugin-http";
 
 const MAX_EXECUTION_MS = 150;
 const MAX_WALL_TIME_MS = 30_000;
@@ -33,6 +34,7 @@ const runtimeOutputSchema = z.object({
   actions: z.array(pluginActionSchema).max(MAX_ACTIONS),
   logs: z.array(z.object({ level: z.enum(["debug", "info", "warn", "error"]), message: z.string().max(1_000) })).max(MAX_LOGS),
   qqRequestCount: z.number().int().min(0).max(MAX_ACTIONS),
+  httpRequestCount: z.number().int().min(0).max(MAX_ACTIONS),
   stopPropagation: z.boolean(),
 });
 
@@ -62,6 +64,7 @@ const bootstrapCode = `(() => {
     const actions = [];
     const logs = [];
     const pendingQQRequests = [];
+    const pendingHTTPRequests = [];
     let operationCount = 0;
     let stopped = false;
     const reserveOperation = () => {
@@ -135,6 +138,26 @@ const bootstrapCode = `(() => {
         },
         unmuteGroupMember(groupOpenid, memberOpenid) { return this.request("POST", "/v2/groups/" + encodeURIComponent(String(groupOpenid)) + "/restrict_chat_setting", { members: [{ op: "del", member_openid: String(memberOpenid), mute_expire_at: "" }] }); }
       }),
+      http: safeFreeze({
+        request(url, options = {}) {
+          reserveOperation();
+          if (typeof __starbotHTTPRequest !== "function") return Promise.reject(new Error("HTTP_REQUEST_UNAVAILABLE"));
+          const request = {
+            url: String(url),
+            method: String(options.method || "GET").toUpperCase(),
+            headers: options.headers,
+            body: options.body
+          };
+          const pending = __starbotHTTPRequest(safeStringify(request)).then((resultJson) => safeParse(resultJson));
+          const tracked = { observed: false, promise: pending };
+          safePush(pendingHTTPRequests, tracked);
+          return safeFreeze({
+            then(onFulfilled, onRejected) { tracked.observed = true; return pending.then(onFulfilled, onRejected); },
+            catch(onRejected) { tracked.observed = true; return pending.catch(onRejected); },
+            finally(onFinally) { tracked.observed = true; return pending.finally(onFinally); }
+          });
+        }
+      }),
       kv: safeFreeze({
         get(key, fallback = null) { return safeHasOwn(kv, String(key)) ? clone(kv[String(key)]) : fallback; },
         set(key, value) { kv[String(key)] = clone(value); addAction({ kind: "kv_set", key: String(key), value }); },
@@ -149,13 +172,14 @@ const bootstrapCode = `(() => {
       stopPropagation() { stopped = true; }
     });
     await state.plugin.onEvent(event, sdk);
-    const settlements = await Promise.all(pendingQQRequests.map(async (request) => {
+    const pendingRequests = pendingQQRequests.concat(pendingHTTPRequests);
+    const settlements = await Promise.all(pendingRequests.map(async (request) => {
       try { await request.promise; return safeFreeze({ ok: true, observed: request.observed }); }
       catch (error) { return safeFreeze({ ok: false, observed: request.observed, error }); }
     }));
     const unhandled = settlements.find((settlement) => !settlement.ok && !settlement.observed);
     if (unhandled) throw unhandled.error;
-    return clone({ actions, logs, qqRequestCount: pendingQQRequests.length, stopPropagation: stopped });
+    return clone({ actions, logs, qqRequestCount: pendingQQRequests.length, httpRequestCount: pendingHTTPRequests.length, stopPropagation: stopped });
   };
   Object.defineProperty(globalThis, "StarBot", { value: safeFreeze({ definePlugin }), writable: false, configurable: false });
   Object.defineProperty(globalThis, "__starbotExecute", { value: execute, writable: false, configurable: false });
@@ -186,6 +210,7 @@ export async function executeHostedPlugin(input: {
   config: Record<string, unknown>;
   kv: Record<string, unknown>;
   qqRequest?: (method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body: unknown, signal: AbortSignal) => Promise<unknown>;
+  httpRequest?: (request: PluginHttpRequest, signal: AbortSignal) => Promise<unknown>;
 }): Promise<HostedPluginRuntimeResult> {
   const startedAt = performance.now();
   let executionDeadline = Date.now() + MAX_EXECUTION_MS;
@@ -244,6 +269,41 @@ export async function executeHostedPlugin(input: {
       });
       context.setProp(context.global, "__starbotQQRequest", qqRequestHandle);
       qqRequestHandle.dispose();
+    }
+
+    if (input.httpRequest) {
+      const httpRequestHandle = context.newFunction("__starbotHTTPRequest", (requestJsonHandle) => {
+        const deferred = context.newPromise();
+        const requestJson = context.getString(requestJsonHandle);
+        void (async () => {
+          try {
+            if (Buffer.byteLength(requestJson, "utf8") > MAX_JSON_BYTES) throw new Error("PLUGIN_HTTP_REQUEST_TOO_LARGE");
+            const request = JSON.parse(requestJson) as PluginHttpRequest;
+            const result = await input.httpRequest!(request, abortController.signal);
+            if (disposed) return;
+            const resultJson = JSON.stringify(result ?? null);
+            if (Buffer.byteLength(resultJson, "utf8") > MAX_JSON_BYTES) throw new Error("PLUGIN_HTTP_RESPONSE_TOO_LARGE");
+            const resultHandle = context.newString(resultJson);
+            deferred.resolve(resultHandle);
+            resultHandle.dispose();
+          } catch (error) {
+            if (disposed) return;
+            const source = error instanceof Error ? error : new Error("PLUGIN_HTTP_REQUEST_FAILED");
+            const errorHandle = context.newError(source.message);
+            context.newString(source.name).consume((handle) => context.setProp(errorHandle, "name", handle));
+            deferred.reject(errorHandle);
+            errorHandle.dispose();
+          } finally {
+            if (!disposed) {
+              executionDeadline = Date.now() + MAX_EXECUTION_MS;
+              executePendingJobs();
+            }
+          }
+        })();
+        return deferred.handle;
+      });
+      context.setProp(context.global, "__starbotHTTPRequest", httpRequestHandle);
+      httpRequestHandle.dispose();
     }
 
     for (const [source, filename] of [[bootstrapCode, "starbot-sdk.js"], [`"use strict";\n${input.code}`, "plugin.js"]] as const) {

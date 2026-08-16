@@ -9,6 +9,7 @@ import {
   validatePluginConfig,
 } from "@/lib/hosted-plugin-package";
 import { executeHostedPlugin, validateHostedPluginCode, type HostedPluginAction } from "@/lib/hosted-plugin-runtime";
+import { requestPluginHttp } from "@/lib/plugin-http";
 import { validateQQApiPath } from "@/lib/qq-api";
 import type {
   HostedPluginInstallation,
@@ -621,19 +622,22 @@ export async function dispatchHostedPlugins(botId: string, eventType: string, ev
     let actionCount = 0;
     let logs: unknown[] = [];
     try {
+      const permissions = new Set(manifest.permissions);
       const result = await executeHostedPlugin({
         code: row.entry_code,
         event: { type: eventType, botId, data: eventData },
         config: readInstallationConfig(row.id),
         kv: readInstallationKv(row.id),
-        qqRequest: new Set(manifest.permissions).has("qq:api")
+        qqRequest: permissions.has("qq:api")
           ? (method, path, body, signal) => getBotClientInternal(botId).request(validateQQApiPath(path), method, body, signal)
           : async () => { throw new Error("PLUGIN_PERMISSION_DENIED:qq:api"); },
+        httpRequest: permissions.has("http:request")
+          ? (request, signal) => requestPluginHttp(request, signal)
+          : async () => { throw new Error("PLUGIN_PERMISSION_DENIED:http:request"); },
       });
       durationMs = result.durationMs;
-      actionCount = result.actions.length + result.qqRequestCount;
+      actionCount = result.actions.length + result.qqRequestCount + result.httpRequestCount;
       logs = result.logs;
-      const permissions = new Set(manifest.permissions);
       if (result.logs.length && !permissions.has("log:write")) throw new Error("PLUGIN_PERMISSION_DENIED:log:write");
       for (const action of result.actions) {
         assertActionPermission(action, permissions);

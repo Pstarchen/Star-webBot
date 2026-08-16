@@ -93,6 +93,11 @@ describe("hosted plugin packages", () => {
     const parsed = packageModule.parseHostedPluginPackage(pluginPackage({ events: ["*"] }));
     expect(parsed.manifest.events).toEqual(["*"]);
   });
+
+  it("accepts the controlled HTTP permission", () => {
+    const parsed = packageModule.parseHostedPluginPackage(pluginPackage({ permissions: ["http:request"] }));
+    expect(parsed.manifest.permissions).toEqual(["http:request"]);
+  });
 });
 
 describe("hosted plugin runtime", () => {
@@ -264,6 +269,41 @@ describe("hosted plugin runtime", () => {
     ]);
     expect(result.qqRequestCount).toBe(2);
     expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "异步测试机器人:1:trace-profile" }]);
+  });
+
+  it("lets async plugins consume controlled HTTP responses", async () => {
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+    const result = await runtimeModule.executeHostedPlugin({
+      code: `StarBot.definePlugin({ async onEvent(event, sdk) {
+        const response = await sdk.http.request("https://api.example.com/weather", { method: "POST", body: { city: "深圳" } });
+        sdk.reply.text(response.body.city + ":" + response.body.temperature);
+      }});`,
+      event: { type: "C2C_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      httpRequest: async (request) => {
+        requests.push(request);
+        return { url: request.url, status: 200, ok: true, headers: {}, body: { city: "深圳", temperature: 28 } };
+      },
+    });
+
+    expect(requests).toEqual([{ url: "https://api.example.com/weather", method: "POST", body: { city: "深圳" } }]);
+    expect(result.httpRequestCount).toBe(1);
+    expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "深圳:28" }]);
+  });
+
+  it("lets plugins handle HTTP permission errors", async () => {
+    const result = await runtimeModule.executeHostedPlugin({
+      code: `StarBot.definePlugin({ async onEvent(event, sdk) {
+        try { await sdk.http.request("https://api.example.com/"); }
+        catch (error) { sdk.reply.text(error.message); }
+      }});`,
+      event: { type: "C2C_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      httpRequest: async () => { throw new Error("PLUGIN_PERMISSION_DENIED:http:request"); },
+    });
+    expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "PLUGIN_PERMISSION_DENIED:http:request" }]);
   });
 
   it("lets plugins handle observed QQ errors and rejects unobserved failures", async () => {
