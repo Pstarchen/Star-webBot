@@ -30,6 +30,7 @@ import { Input, Textarea } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { formatApiError } from "@/lib/api-error";
 import type {
   Bot,
   HostedPluginConfigField,
@@ -64,8 +65,8 @@ function formatDate(value: string | null) {
 
 async function requestJson<T = unknown>(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
-  const body = await response.json().catch(() => ({})) as T & { message?: string; code?: string };
-  if (!response.ok) throw new Error(body.message || body.code || "请求失败");
+  const body = await response.json().catch(() => ({})) as T;
+  if (!response.ok) throw new Error(formatApiError(body));
   return body;
 }
 
