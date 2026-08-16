@@ -18,6 +18,7 @@ out
 *.tsbuildinfo
 Dockerfile*
 README.md
-docs
+docs/*
+!docs/plugin-development.md
 examples
 tests
