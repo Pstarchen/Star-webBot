@@ -38,7 +38,11 @@ function importError(error: unknown) {
   if (code === "PLUGIN_PACKAGE_TOO_LARGE") return NextResponse.json({ message: "插件包不能超过 2MB" }, { status: 413 });
   if (code === "PLUGIN_PROJECT_SUSPENDED") return NextResponse.json({ message: "该插件项目已被管理员停用" }, { status: 403 });
   if (code.startsWith("PLUGIN_")) return NextResponse.json({ message: "插件包校验失败", code, detail: code.split(":").slice(1).join(":") || undefined }, { status: 400 });
-  return NextResponse.json({ message: "插件包导入失败" }, { status: 500 });
+  console.error("Plugin package import failed", {
+    name: error instanceof Error ? error.name : typeof error,
+    message: code || "UNKNOWN_ERROR",
+  });
+  return NextResponse.json({ message: "插件包导入失败", code: "PLUGIN_IMPORT_FAILED" }, { status: 500 });
 }
 
 export async function POST(request: Request) {
