@@ -47,7 +47,7 @@ jobs:
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h localhost -uroot -ptest-root-password"
+          --health-cmd="command -v mariadb-admin >/dev/null 2>&1 && mariadb-admin ping -h localhost -uroot -ptest-root-password || mysqladmin ping -h localhost -uroot -ptest-root-password"
           --health-interval=5s
           --health-timeout=5s
           --health-retries=30
