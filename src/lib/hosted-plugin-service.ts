@@ -113,7 +113,7 @@ function accessibleInstallation(user: SessionUser, installationId: string) {
 }
 
 function readInstallationConfig(installationId: string) {
-  const rows = getDatabase().prepare("SELECT key, value_json FROM plugin_config_values WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
+  const rows = getDatabase().prepare("SELECT `key`, value_json FROM plugin_config_values WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
   const config: Record<string, string | number | boolean> = {};
   for (const row of rows) {
     const value = parseJson<unknown>(row.value_json, null);
@@ -123,7 +123,7 @@ function readInstallationConfig(installationId: string) {
 }
 
 function readInstallationKv(installationId: string) {
-  const rows = getDatabase().prepare("SELECT key, value_json FROM plugin_kv WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
+  const rows = getDatabase().prepare("SELECT `key`, value_json FROM plugin_kv WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
   return Object.fromEntries(rows.map((row) => [row.key, parseJson(row.value_json, null)]));
 }
 
@@ -358,7 +358,7 @@ export function installPlugin(user: SessionUser, input: { projectId: string; bot
         (id, user_id, bot_id, project_id, version_id, enabled, priority, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
     `).run(installationId, user.id, input.botId, project.id, version.id, input.priority ?? 50, now, now);
-    const insertConfig = database.prepare("INSERT INTO plugin_config_values (installation_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)");
+    const insertConfig = database.prepare("INSERT INTO plugin_config_values (installation_id, `key`, value_json, updated_at) VALUES (?, ?, ?, ?)");
     for (const [key, value] of Object.entries(defaults)) insertConfig.run(installationId, key, JSON.stringify(value), now);
   })();
   writeAuditLog(user.id, "hosted_plugin.install", "plugin_installation", installationId, { projectId: project.id, versionId: version.id, botId: input.botId });
@@ -392,7 +392,7 @@ export function updatePluginInstallation(user: SessionUser, installationId: stri
     `).run(version.id, input.enabled === undefined ? null : input.enabled ? 1 : 0, input.priority ?? null, input.enabled ? 1 : 0, input.enabled ? 1 : 0, now, installationId);
     if (config) {
       database.prepare("DELETE FROM plugin_config_values WHERE installation_id = ?").run(installationId);
-      const insert = database.prepare("INSERT INTO plugin_config_values (installation_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)");
+      const insert = database.prepare("INSERT INTO plugin_config_values (installation_id, `key`, value_json, updated_at) VALUES (?, ?, ?, ?)");
       for (const [key, value] of Object.entries(config)) insert.run(installationId, key, JSON.stringify(value), now);
     }
   })();
@@ -568,19 +568,19 @@ async function executeAction(botId: string, eventType: string, eventData: unknow
 function writeKvAction(installationId: string, action: Extract<HostedPluginAction, { kind: "kv_set" | "kv_delete" }>) {
   const database = getDatabase();
   if (action.kind === "kv_delete") {
-    database.prepare("DELETE FROM plugin_kv WHERE installation_id = ? AND key = ?").run(installationId, action.key);
+    database.prepare("DELETE FROM plugin_kv WHERE installation_id = ? AND `key` = ?").run(installationId, action.key);
     return;
   }
   const valueJson = JSON.stringify(action.value);
   if (Buffer.byteLength(valueJson, "utf8") > MAX_KV_VALUE_BYTES) throw new Error("PLUGIN_KV_VALUE_TOO_LARGE");
-  const current = database.prepare("SELECT key, value_json FROM plugin_kv WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
+  const current = database.prepare("SELECT `key`, value_json FROM plugin_kv WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
   if (!current.some((row) => row.key === action.key) && current.length >= MAX_KV_ENTRIES) throw new Error("PLUGIN_KV_ENTRY_LIMIT");
   const total = current.reduce((sum, row) => sum + Buffer.byteLength(row.value_json, "utf8"), 0)
     - Buffer.byteLength(current.find((row) => row.key === action.key)?.value_json || "", "utf8") + Buffer.byteLength(valueJson, "utf8");
   if (total > MAX_KV_TOTAL_BYTES) throw new Error("PLUGIN_KV_TOTAL_LIMIT");
   database.prepare(`
-    INSERT INTO plugin_kv (installation_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)
-    ON CONFLICT(installation_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+    INSERT INTO plugin_kv (installation_id, \`key\`, value_json, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(installation_id, \`key\`) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
   `).run(installationId, action.key, valueJson, new Date().toISOString());
 }
 

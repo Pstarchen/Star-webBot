@@ -10,6 +10,7 @@ const mysqlDescribe = mysqlEnabled ? describe : describe.skip;
 let databaseModule: typeof import("@/lib/database");
 let eventRetentionModule: typeof import("@/lib/event-retention");
 let gatewayCoordinationModule: typeof import("@/lib/gateway-coordination");
+let hostedPluginServiceModule: typeof import("@/lib/hosted-plugin-service");
 let sessionModule: typeof import("@/lib/session");
 let systemSettingsModule: typeof import("@/lib/system-settings-service");
 let configurationDirectory: string;
@@ -23,10 +24,11 @@ mysqlDescribe("MySQL database adapter", () => {
     delete process.env.BOOTSTRAP_ADMIN_EMAIL;
     delete process.env.BOOTSTRAP_ADMIN_PASSWORD;
     process.env.DATABASE_PATH = path.join(configurationDirectory, "starbot.db");
-    [databaseModule, eventRetentionModule, gatewayCoordinationModule, sessionModule, systemSettingsModule] = await Promise.all([
+    [databaseModule, eventRetentionModule, gatewayCoordinationModule, hostedPluginServiceModule, sessionModule, systemSettingsModule] = await Promise.all([
       import("@/lib/database"),
       import("@/lib/event-retention"),
       import("@/lib/gateway-coordination"),
+      import("@/lib/hosted-plugin-service"),
       import("@/lib/session"),
       import("@/lib/system-settings-service"),
     ]);
@@ -106,6 +108,57 @@ mysqlDescribe("MySQL database adapter", () => {
     expect(database.prepare("SELECT COUNT(*) AS count FROM event_logs WHERE bot_id = ?").get(botId)).toEqual({ count: 0 });
     expect(gatewayCoordinationModule.acquireGatewayLease(botId, Date.now())).toBe(true);
     expect(gatewayCoordinationModule.renewGatewayLease(botId, Date.now())).toBe(true);
+  });
+
+  it("installs private plugins with default config and persists plugin KV", async () => {
+    const admin = sessionModule.authenticate("mysql-admin@test.local", "mysql-admin-password");
+    expect(admin).not.toBeNull();
+    const database = databaseModule.getDatabase();
+    const botId = randomUUID();
+    const projectId = randomUUID();
+    const versionId = randomUUID();
+    const now = new Date().toISOString();
+    const manifest = {
+      schemaVersion: 1,
+      id: `mysql-default-config-${projectId}`,
+      name: "MySQL Default Config Plugin",
+      version: "1.0.0",
+      description: "Validates MySQL plugin config and KV queries.",
+      author: "StarBot Tests",
+      category: "Testing",
+      tags: ["mysql"],
+      entry: "index.js",
+      events: ["C2C_MESSAGE_CREATE"],
+      permissions: ["storage:kv"],
+      commands: [],
+      configSchema: [{ key: "step", label: "Step", type: "number", required: true, default: 2, min: 1, max: 10 }],
+    };
+    database.prepare(`
+      INSERT INTO bots (id, user_id, name, app_id, client_secret_cipher, environment, connection_mode, intents, status, auto_connect, created_at, updated_at)
+      VALUES (?, ?, 'MySQL Plugin Bot', ?, 'cipher', 'sandbox', 'websocket', 0, 'offline', 0, ?, ?)
+    `).run(botId, admin!.id, `mysql-plugin-${botId}`, now, now);
+    database.prepare(`
+      INSERT INTO plugin_projects
+        (id, owner_user_id, slug, name, description, author, category, tags_json, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private', ?, ?)
+    `).run(projectId, admin!.id, manifest.id, manifest.name, manifest.description, manifest.author, manifest.category, JSON.stringify(manifest.tags), now, now);
+    database.prepare(`
+      INSERT INTO plugin_versions
+        (id, project_id, version, manifest_json, entry_code, readme, package_sha256, package_size, validation_json, status, created_at)
+      VALUES (?, ?, ?, ?, ?, NULL, ?, 1, '{}', 'active', ?)
+    `).run(versionId, projectId, manifest.version, JSON.stringify(manifest), "StarBot.definePlugin({ onEvent(event, sdk) { sdk.kv.set('count', sdk.config.step); } });", "0".repeat(64), now);
+
+    const installed = hostedPluginServiceModule.installPlugin(admin!, { projectId, versionId, botId });
+    expect(database.prepare("SELECT value_json FROM plugin_config_values WHERE installation_id = ? AND `key` = 'step'").get(installed.installationId))
+      .toEqual({ value_json: "2" });
+    expect(hostedPluginServiceModule.listPluginCenter(admin!).installations.find((installation) => installation.id === installed.installationId)?.config)
+      .toEqual({ step: 2 });
+
+    hostedPluginServiceModule.updatePluginInstallation(admin!, installed.installationId, { enabled: true, config: { step: 3 } });
+    await expect(hostedPluginServiceModule.dispatchHostedPlugins(botId, "C2C_MESSAGE_CREATE", { id: randomUUID() }))
+      .resolves.toEqual({ executed: 1, stopped: false });
+    expect(database.prepare("SELECT value_json FROM plugin_kv WHERE installation_id = ? AND `key` = 'count'").get(installed.installationId))
+      .toEqual({ value_json: "3" });
   });
 
   it("recovers when a previous initialization stopped after creating users", () => {

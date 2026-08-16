@@ -23,7 +23,14 @@ export async function POST(request: Request) {
     const code = error instanceof Error ? error.message : "";
     if (code.includes("UNIQUE")) return NextResponse.json({ message: "该机器人已经安装此插件" }, { status: 409 });
     if (code === "PLUGIN_QUOTA_EXCEEDED") return NextResponse.json({ message: "插件安装数量已达到当前套餐上限" }, { status: 409 });
-    return NextResponse.json({ message: "插件、版本或机器人不存在，或无权安装" }, { status: 404 });
+    if (["BOT_NOT_FOUND", "PLUGIN_PROJECT_NOT_FOUND", "PLUGIN_PROJECT_NOT_AVAILABLE", "PLUGIN_VERSION_NOT_FOUND"].includes(code)) {
+      return NextResponse.json({ message: "插件、版本或机器人不存在，或无权安装" }, { status: 404 });
+    }
+    console.error("Plugin installation failed", {
+      name: error instanceof Error ? error.name : typeof error,
+      code: code.split(":", 1)[0] || "UNKNOWN_ERROR",
+      message: code.slice(0, 1_000) || "UNKNOWN_ERROR",
+    });
+    return NextResponse.json({ message: "插件安装失败", code: "PLUGIN_INSTALL_FAILED" }, { status: 500 });
   }
 }
-
