@@ -48,4 +48,19 @@ describe("hosted plugin HTTP", () => {
       lookup: publicLookup,
     })).rejects.toThrow("PLUGIN_HTTP_RESPONSE_TOO_LARGE");
   });
+
+  it("keeps media responses addressable without buffering the binary body", async () => {
+    const fetchMock = vi.fn(async () => new Response("x".repeat(pluginHttpLimits.maxResponseBytes + 1))) as typeof fetch;
+
+    await expect(requestPluginHttp({ url: "https://cdn.example.com/video.mp4", responseMode: "media" }, new AbortController().signal, {
+      fetch: fetchMock,
+      lookup: publicLookup,
+    })).resolves.toMatchObject({
+      url: "https://cdn.example.com/video.mp4",
+      status: 200,
+      ok: true,
+      body: "",
+      headers: {},
+    });
+  });
 });

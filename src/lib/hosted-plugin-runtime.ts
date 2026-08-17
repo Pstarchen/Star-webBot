@@ -144,12 +144,13 @@ const bootstrapCode = `(() => {
         request(url, options = {}) {
           reserveOperation();
           if (typeof __starbotHTTPRequest !== "function") return Promise.reject(new Error("HTTP_REQUEST_UNAVAILABLE"));
-          const request = {
-            url: String(url),
-            method: String(options.method || "GET").toUpperCase(),
-            headers: options.headers,
-            body: options.body
-          };
+            const request = {
+              url: String(url),
+              method: String(options.method || "GET").toUpperCase(),
+              ...(options.responseMode === "media" ? { responseMode: "media" } : {}),
+              headers: options.headers,
+              body: options.body
+            };
           const pending = __starbotHTTPRequest(safeStringify(request)).then((resultJson) => safeParse(resultJson));
           const tracked = { observed: false, promise: pending };
           safePush(pendingHTTPRequests, tracked);

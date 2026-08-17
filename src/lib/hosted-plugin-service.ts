@@ -636,10 +636,17 @@ function writeKvAction(installationId: string, action: Extract<HostedPluginActio
   const total = current.reduce((sum, row) => sum + Buffer.byteLength(row.value_json, "utf8"), 0)
     - Buffer.byteLength(current.find((row) => row.key === action.key)?.value_json || "", "utf8") + Buffer.byteLength(valueJson, "utf8");
   if (total > MAX_KV_TOTAL_BYTES) throw new Error("PLUGIN_KV_TOTAL_LIMIT");
-  database.prepare(`
-    INSERT INTO plugin_kv (installation_id, \`key\`, value_json, updated_at) VALUES (?, ?, ?, ?)
-    ON CONFLICT(installation_id, \`key\`) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
-  `).run(installationId, action.key, valueJson, new Date().toISOString());
+  const updatedAt = new Date().toISOString();
+  database.transaction(() => {
+    const existing = database.prepare("SELECT 1 AS found FROM plugin_kv WHERE installation_id = ? AND `key` = ? LIMIT 1").get(installationId, action.key);
+    if (existing) {
+      database.prepare("UPDATE plugin_kv SET value_json = ?, updated_at = ? WHERE installation_id = ? AND `key` = ?")
+        .run(valueJson, updatedAt, installationId, action.key);
+    } else {
+      database.prepare("INSERT INTO plugin_kv (installation_id, `key`, value_json, updated_at) VALUES (?, ?, ?, ?)")
+        .run(installationId, action.key, valueJson, updatedAt);
+    }
+  })();
 }
 
 function eventKey(data: unknown) {

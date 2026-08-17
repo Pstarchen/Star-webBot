@@ -14,6 +14,7 @@ import {
   PackageCheck,
   Pencil,
   Search,
+  Save,
   Settings2,
   ShieldCheck,
   Store,
@@ -337,6 +338,17 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
     if (saved) setConfigInstallation(null);
   }
 
+  async function savePriority() {
+    if (!configInstallation) return;
+    const priority = Number(configPriority);
+    if (!Number.isInteger(priority) || priority < 1 || priority > 100) {
+      setError("执行优先级必须是 1 到 100 的整数");
+      return;
+    }
+    const saved = await updateInstallation(configInstallation.id, { priority }, `priority:${configInstallation.id}`);
+    if (saved) setConfigInstallation((current) => current ? { ...current, priority } : current);
+  }
+
   async function uninstall(installation: HostedPluginInstallation) {
     if (!window.confirm(`确定从 ${installation.botName} 卸载 ${installation.name} 吗？插件配置、KV 数据和运行记录将一并删除。`)) return;
     await runAction(`delete:${installation.id}`, async () => {
@@ -516,12 +528,17 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
           <Dialog.Content className={`modal-panel fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-32px)] w-[calc(100%-32px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6 ${configInstallation?.configPage ? "max-w-6xl" : "max-w-lg"}`}>
             <DialogHeader title={`配置 ${configInstallation?.name || "插件"}`} description={`${configInstallation?.botName || "机器人"} · 配置保存后立即用于下一次事件。`} />
-            <form onSubmit={saveConfig} className="mt-5 space-y-4">
-              <label className="block sm:max-w-52">
-                <span className="field-label">执行优先级</span>
-                <Input type="number" min={1} max={100} value={configPriority} onChange={(event) => setConfigPriority(event.target.value)} required />
-              </label>
-              {configInstallation?.configPage ? (
+            {configInstallation?.configPage ? (
+              <div className="mt-5 space-y-4">
+                <div className="flex flex-wrap items-end justify-between gap-3 border-b pb-4">
+                  <label className="block w-40">
+                    <span className="field-label">执行优先级</span>
+                    <Input type="number" min={1} max={100} value={configPriority} onChange={(event) => setConfigPriority(event.target.value)} required />
+                  </label>
+                  <Button type="button" variant="outline" size="sm" onClick={() => void savePriority()} disabled={busy === `priority:${configInstallation.id}`}>
+                    <Save size={14} />保存优先级
+                  </Button>
+                </div>
                 <PluginConfigPage
                   installation={configInstallation}
                   config={configValues}
@@ -531,15 +548,20 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
                   }}
                   onError={setError}
                 />
-              ) : (
-                <>
-                  {configInstallation?.configSchema.map((field) => <ConfigField key={field.key} field={field} value={configValues[field.key] ?? field.default} onChange={(value) => setConfigValues((current) => ({ ...current, [field.key]: value }))} />)}
-                  {configInstallation?.configSchema.length === 0 && <div className="border bg-muted/30 px-3 py-4 text-xs text-muted-foreground">该插件没有可配置项。</div>}
-                </>
-              )}
-              <InlineError message={error} />
-              <Button type="submit" className="w-full" disabled={busy === `config:${configInstallation?.id}`}><Settings2 size={14} />{configInstallation?.configPage ? "保存运行设置" : "保存配置"}</Button>
-            </form>
+                <InlineError message={error} />
+              </div>
+            ) : (
+              <form onSubmit={saveConfig} className="mt-5 space-y-4">
+                <label className="block sm:max-w-52">
+                  <span className="field-label">执行优先级</span>
+                  <Input type="number" min={1} max={100} value={configPriority} onChange={(event) => setConfigPriority(event.target.value)} required />
+                </label>
+                {configInstallation?.configSchema.map((field) => <ConfigField key={field.key} field={field} value={configValues[field.key] ?? field.default} onChange={(value) => setConfigValues((current) => ({ ...current, [field.key]: value }))} />)}
+                {configInstallation?.configSchema.length === 0 && <div className="border bg-muted/30 px-3 py-4 text-xs text-muted-foreground">该插件没有可配置项。</div>}
+                <InlineError message={error} />
+                <Button type="submit" className="w-full" disabled={busy === `config:${configInstallation?.id}`}><Settings2 size={14} />保存配置</Button>
+              </form>
+            )}
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>

@@ -14,6 +14,7 @@ export type PluginHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 export type PluginHttpRequest = {
   url: string;
   method?: PluginHttpMethod;
+  responseMode?: "json" | "media";
   headers?: Record<string, string>;
   body?: unknown;
 };
@@ -119,7 +120,19 @@ function serializeBody(method: PluginHttpMethod, body: unknown, headers: Headers
   return serialized;
 }
 
-function requestPinned(url: URL, method: PluginHttpMethod, headers: Headers, body: string | undefined, signal: AbortSignal, address: LookupResult) {
+function isBinaryContentType(value: string) {
+  const contentType = value.split(";", 1)[0].trim().toLowerCase();
+  if (!contentType) return false;
+  return !contentType.startsWith("text/")
+    && contentType !== "application/json"
+    && contentType.endsWith("+json") === false
+    && contentType !== "application/javascript"
+    && contentType !== "application/xml"
+    && contentType.endsWith("+xml") === false
+    && contentType !== "application/x-www-form-urlencoded";
+}
+
+function requestPinned(url: URL, method: PluginHttpMethod, headers: Headers, body: string | undefined, signal: AbortSignal, address: LookupResult, responseMode: PluginHttpRequest["responseMode"]) {
   return new Promise<Response>((resolve, reject) => {
     const request = (url.protocol === "https:" ? requestHttps : requestHttp)(url, {
       method,
@@ -134,6 +147,21 @@ function requestPinned(url: URL, method: PluginHttpMethod, headers: Headers, bod
         (callback as (error: NodeJS.ErrnoException | null, resolvedAddress: string, family: number) => void)(null, address.address, address.family);
       }) as never,
     }, (incoming) => {
+      const contentType = String(incoming.headers["content-type"] || "");
+      if (responseMode === "media" || isBinaryContentType(contentType)) {
+        const responseHeaders = new Headers();
+        for (const [name, value] of Object.entries(incoming.headers)) {
+          for (const item of Array.isArray(value) ? value : value === undefined ? [] : [value]) responseHeaders.append(name, String(item));
+        }
+        incoming.on("error", () => undefined);
+        resolve(new Response(null, {
+          status: incoming.statusCode || 500,
+          statusText: incoming.statusMessage,
+          headers: responseHeaders,
+        }));
+        incoming.destroy();
+        return;
+      }
       const chunks: Buffer[] = [];
       let size = 0;
       incoming.on("data", (chunk: Buffer | string) => {
@@ -211,7 +239,7 @@ export async function requestPluginHttp(request: PluginHttpRequest, signal: Abor
     const addresses = await assertPublicUrl(url, lookup);
     const response = dependencies.fetch
       ? await dependencies.fetch(url, { method, headers, body, redirect: "manual", signal })
-      : await requestPinned(url, method, headers, body, signal, addresses[0]);
+      : await requestPinned(url, method, headers, body, signal, addresses[0], request.responseMode);
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       if (redirectCount === MAX_REDIRECTS) throw new Error("PLUGIN_HTTP_REDIRECT_LIMIT");
       const location = response.headers.get("location");
@@ -230,8 +258,10 @@ export async function requestPluginHttp(request: PluginHttpRequest, signal: Abor
       continue;
     }
 
-    const text = await readLimitedBody(response);
     const contentType = response.headers.get("content-type") || "";
+    const skipBody = request.responseMode === "media" || isBinaryContentType(contentType);
+    const text = skipBody ? "" : await readLimitedBody(response);
+    if (skipBody) await response.body?.cancel();
     let parsedBody: unknown = text;
     if (text && /(?:application\/json|\+json)(?:;|$)/i.test(contentType)) {
       try { parsedBody = JSON.parse(text); } catch { parsedBody = text; }

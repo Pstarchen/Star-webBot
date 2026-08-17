@@ -364,6 +364,26 @@ describe("hosted plugin runtime", () => {
     expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "深圳:28" }]);
   });
 
+  it("passes media response mode through the sandbox HTTP bridge", async () => {
+    const requests: Array<{ responseMode?: string }> = [];
+    const result = await runtimeModule.executeHostedPlugin({
+      code: `StarBot.definePlugin({ async onEvent(event, sdk) {
+        const response = await sdk.http.request("https://cdn.example.com/video.mp4", { responseMode: "media" });
+        sdk.reply.text(response.url);
+      }});`,
+      event: { type: "C2C_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      httpRequest: async (request) => {
+        requests.push(request);
+        return { url: request.url, status: 200, ok: true, headers: { "content-type": "video/mp4" }, body: "" };
+      },
+    });
+
+    expect(requests).toEqual([{ url: "https://cdn.example.com/video.mp4", method: "GET", responseMode: "media" }]);
+    expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "https://cdn.example.com/video.mp4" }]);
+  });
+
   it("lets plugins handle HTTP permission errors", async () => {
     const result = await runtimeModule.executeHostedPlugin({
       code: `StarBot.definePlugin({ async onEvent(event, sdk) {
@@ -444,8 +464,9 @@ describe("hosted plugin lifecycle", () => {
     serviceModule.updatePluginInstallation(user, installed.installationId, { enabled: true, config: { step: 3 } });
     expect(serviceModule.getPluginConfigPage(user, installed.installationId)).toEqual({ html: "<main>计数器设置</main>", height: 760 });
     serviceModule.setPluginRecord(user, installed.installationId, "dashboard.note", { text: "由配置页维护" });
+    serviceModule.setPluginRecord(user, installed.installationId, "dashboard.note", { text: "由配置页更新" });
     expect(serviceModule.listPluginRecords(user, installed.installationId)).toEqual([
-      expect.objectContaining({ key: "dashboard.note", value: { text: "由配置页维护" } }),
+      expect.objectContaining({ key: "dashboard.note", value: { text: "由配置页更新" } }),
     ]);
     serviceModule.deletePluginRecord(user, installed.installationId, "dashboard.note");
     expect(serviceModule.listPluginRecords(user, installed.installationId)).toEqual([]);

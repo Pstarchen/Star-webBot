@@ -181,11 +181,14 @@ type ApiDefinition = {
   id: string;                       // ^[A-Za-z][A-Za-z0-9_-]{0,63}$
   name: string;                     // 1-80 字符
   method: "GET" | "POST";
+  responseMode?: "json" | "media"; // media 只保留最终 URL，不读取二进制响应体
   url: string;                      // 1-2,000 字符
   headers: Record<string, string>;  // 最多 20 项
   body?: JsonValue;                 // 单个 body 最大 16 KB
 };
 ```
+
+`responseMode` 默认为 `json`。当 API 直接返回图片、视频或音频时设为 `media`，回复媒体地址使用 `{{api.<id>.url}}`；如果 API 返回 JSON 中的媒体地址，则保持 `json`，使用 `{{api.<id>.<JSON路径>}}`，例如 `{{api.video.data.url}}`。媒体地址必须是 QQ 服务器可访问的公网 URL。
 
 ### 4.3 `reply-list`
 
