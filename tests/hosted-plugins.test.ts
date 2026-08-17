@@ -512,6 +512,14 @@ describe("hosted plugin lifecycle", () => {
     });
 
     const nextVersion = await serviceModule.importPluginPackage(user, pluginPackage({ version: "1.1.0" }));
+    serviceModule.updatePluginInstallation(user, installed.installationId, { versionId: nextVersion.versionId });
+    expect(serviceModule.listPluginCenter(user).installations.find((installation) => installation.id === installed.installationId)).toMatchObject({
+      versionId: nextVersion.versionId,
+      version: "1.1.0",
+      latestVersionId: nextVersion.versionId,
+      latestVersion: "1.1.0",
+      config: { step: 3 },
+    });
     serviceModule.requestPluginReview(user, imported.projectId, nextVersion.versionId);
     const removed = serviceModule.removeMarketplacePlugin(admin!, imported.projectId, "安全复核下架");
     expect(removed).toEqual({ disabledInstallations: 1, cancelledReviews: 1 });

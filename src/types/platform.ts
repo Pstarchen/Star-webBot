@@ -214,6 +214,8 @@ export type HostedPluginInstallation = {
   category: string;
   tags: string[];
   version: string;
+  latestVersionId: string | null;
+  latestVersion: string | null;
   projectStatus: "private" | "pending" | "published" | "rejected" | "suspended";
   enabled: boolean;
   priority: number;

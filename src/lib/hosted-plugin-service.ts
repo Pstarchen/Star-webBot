@@ -126,6 +126,12 @@ function readInstallationConfig(installationId: string) {
   return config;
 }
 
+function configForManifest(manifest: ReturnType<typeof parseManifest>, current: Record<string, HostedPluginConfigValue>) {
+  return Object.fromEntries(manifest.configSchema
+    .filter((field) => Object.prototype.hasOwnProperty.call(current, field.key))
+    .map((field) => [field.key, current[field.key]]));
+}
+
 function readInstallationKv(installationId: string) {
   const rows = getDatabase().prepare("SELECT `key`, value_json FROM plugin_kv WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
   return Object.fromEntries(rows.map((row) => [row.key, parseJson(row.value_json, null)]));
@@ -180,13 +186,18 @@ function marketplaceItems(user: SessionUser): PluginMarketplaceItem[] {
 function installations(user: SessionUser): HostedPluginInstallation[] {
   const rows = getDatabase().prepare(`
     SELECT installations.*, bots.name AS bot_name, projects.slug, projects.name, projects.description, projects.status AS project_status,
-      projects.author, projects.category, projects.tags_json, versions.version, versions.manifest_json,
+      projects.owner_user_id, projects.author, projects.category, projects.tags_json, versions.version, versions.manifest_json,
+      (SELECT latest_versions.id FROM plugin_versions latest_versions WHERE latest_versions.project_id = projects.id AND latest_versions.status = 'active' ORDER BY latest_versions.created_at DESC LIMIT 1) AS owner_latest_version_id,
+      (SELECT latest_versions.version FROM plugin_versions latest_versions WHERE latest_versions.project_id = projects.id AND latest_versions.status = 'active' ORDER BY latest_versions.created_at DESC LIMIT 1) AS owner_latest_version,
+      listings.version_id AS listing_version_id, listing_versions.version AS listing_version,
       runs.status AS run_status, runs.duration_ms AS run_duration_ms, runs.action_count AS run_action_count,
       runs.error AS run_error, runs.created_at AS run_created_at
     FROM plugin_installations installations
     JOIN bots ON bots.id = installations.bot_id
     JOIN plugin_projects projects ON projects.id = installations.project_id
     JOIN plugin_versions versions ON versions.id = installations.version_id
+    LEFT JOIN plugin_market_listings listings ON listings.project_id = projects.id
+    LEFT JOIN plugin_versions listing_versions ON listing_versions.id = listings.version_id
     LEFT JOIN plugin_runs runs ON runs.id = (
       SELECT id FROM plugin_runs WHERE installation_id = installations.id ORDER BY created_at DESC LIMIT 1
     )
@@ -194,13 +205,16 @@ function installations(user: SessionUser): HostedPluginInstallation[] {
     ORDER BY installations.updated_at DESC
   `).all(user.id) as Array<{
     id: string; project_id: string; version_id: string; bot_id: string; bot_name: string; slug: string; name: string;
-    description: string; author: string; category: string; tags_json: string; version: string; manifest_json: string; project_status: ProjectRow["status"];
+    description: string; owner_user_id: string; author: string; category: string; tags_json: string; version: string; manifest_json: string; project_status: ProjectRow["status"];
+    owner_latest_version_id: string | null; owner_latest_version: string | null; listing_version_id: string | null; listing_version: string | null;
     enabled: number; priority: number; failure_count: number; last_error: string | null; last_run_at: string | null;
     run_status: "success" | "skipped" | "failed" | null; run_duration_ms: number | null; run_action_count: number | null;
     run_error: string | null; run_created_at: string | null;
   }>;
   return rows.map((row) => {
     const manifest = parseManifest(row.manifest_json);
+    const latestVersionId = row.owner_user_id === user.id ? row.owner_latest_version_id : row.listing_version_id;
+    const latestVersion = row.owner_user_id === user.id ? row.owner_latest_version : row.listing_version;
     return {
       id: row.id,
       projectId: row.project_id,
@@ -214,6 +228,8 @@ function installations(user: SessionUser): HostedPluginInstallation[] {
       category: manifest.category,
       tags: manifest.tags,
       version: row.version,
+      latestVersionId,
+      latestVersion,
       projectStatus: row.project_status,
       enabled: Boolean(row.enabled),
       priority: row.priority,
@@ -384,10 +400,13 @@ export function updatePluginInstallation(user: SessionUser, installationId: stri
     if (listing?.version_id !== version.id) throw new Error("PLUGIN_VERSION_NOT_AVAILABLE");
   }
   const manifest = parseManifest(version.manifest_json);
-  const config = input.config === undefined ? null : validatePluginConfig(manifest, input.config);
-  if ((input.enabled === true || (input.versionId !== undefined && Boolean(installation.enabled))) && !config) {
-    validatePluginConfig(manifest, readInstallationConfig(installationId));
-  }
+  const currentConfig = readInstallationConfig(installationId);
+  const config = input.config === undefined
+    ? input.versionId === undefined
+      ? null
+      : validatePluginConfig(manifest, configForManifest(manifest, currentConfig))
+    : validatePluginConfig(manifest, input.config);
+  if (input.enabled === true && !config) validatePluginConfig(manifest, configForManifest(manifest, currentConfig));
   const now = new Date().toISOString();
   database.transaction(() => {
     database.prepare(`

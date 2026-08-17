@@ -13,6 +13,7 @@ import {
   FileArchive,
   PackageCheck,
   Pencil,
+  RefreshCw,
   Search,
   Save,
   Settings2,
@@ -357,6 +358,11 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
     });
   }
 
+  async function updateInstallationVersion(installation: HostedPluginInstallation) {
+    if (!installation.latestVersionId || installation.latestVersionId === installation.versionId) return;
+    await updateInstallation(installation.id, { versionId: installation.latestVersionId }, `version:${installation.id}`);
+  }
+
   async function requestReview(project: PluginDeveloperProject) {
     const latestVersion = project.versions[0];
     if (!latestVersion) return;
@@ -470,6 +476,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
                     </div>
                     <div className="flex items-center justify-between gap-2 lg:justify-end">
                       <Switch checked={installation.enabled} disabled={installation.projectStatus === "suspended" || busy === `toggle:${installation.id}`} onCheckedChange={(enabled) => void updateInstallation(installation.id, { enabled }, `toggle:${installation.id}`)} aria-label={installation.projectStatus === "suspended" ? "插件已被管理员下架" : installation.enabled ? "停用插件" : "启用插件"} />
+                      {installation.latestVersionId && installation.latestVersionId !== installation.versionId && <Button variant="outline" size="sm" onClick={() => void updateInstallationVersion(installation)} disabled={busy === `version:${installation.id}`}><RefreshCw size={14} />{busy === `version:${installation.id}` ? "更新中..." : `更新到 v${installation.latestVersion || "最新版本"}`}</Button>}
                       <Button variant="outline" size="sm" onClick={() => openConfig(installation)}><Settings2 size={14} />配置</Button>
                       <Button variant="ghost" size="icon" disabled={busy === `delete:${installation.id}`} onClick={() => void uninstall(installation)} aria-label="卸载插件"><Trash2 size={15} /></Button>
                     </div>
