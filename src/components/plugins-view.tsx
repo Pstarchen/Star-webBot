@@ -461,7 +461,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
             <Card className="overflow-hidden">
               <div className="divide-y">
                 {data.installations.map((installation) => (
-                  <div key={installation.id} className="grid gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_180px_190px] lg:items-center">
+                  <div key={installation.id} className="grid gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_180px_minmax(190px,320px)] lg:items-center">
                     <div className="flex min-w-0 items-start gap-3">
                       <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-muted"><Boxes size={16} /></div>
                       <div className="min-w-0">
@@ -474,7 +474,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
                       <div className="flex items-center gap-2 text-muted-foreground"><Clock3 size={13} />{formatDate(installation.lastRunAt)}</div>
                       {installation.lastRun && <div className={`mt-1.5 truncate ${installation.lastRun.status === "failed" ? "text-red-600" : "text-muted-foreground"}`}>{installation.lastRun.status === "failed" ? installation.lastRun.error : `${installation.lastRun.durationMs}ms · ${installation.lastRun.actionCount} 个动作`}</div>}
                     </div>
-                    <div className="flex items-center justify-between gap-2 lg:justify-end">
+                    <div className="flex flex-wrap items-center justify-between gap-2 lg:justify-end">
                       <Switch checked={installation.enabled} disabled={installation.projectStatus === "suspended" || busy === `toggle:${installation.id}`} onCheckedChange={(enabled) => void updateInstallation(installation.id, { enabled }, `toggle:${installation.id}`)} aria-label={installation.projectStatus === "suspended" ? "插件已被管理员下架" : installation.enabled ? "停用插件" : "启用插件"} />
                       {installation.latestVersionId && installation.latestVersionId !== installation.versionId && <Button variant="outline" size="sm" onClick={() => void updateInstallationVersion(installation)} disabled={busy === `version:${installation.id}`}><RefreshCw size={14} />{busy === `version:${installation.id}` ? "更新中..." : `更新到 v${installation.latestVersion || "最新版本"}`}</Button>}
                       <Button variant="outline" size="sm" onClick={() => openConfig(installation)}><Settings2 size={14} />配置</Button>
