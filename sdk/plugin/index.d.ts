@@ -4,7 +4,8 @@ export type StarBotEvent<T = Record<string, unknown>> = {
   data: T;
 };
 
-export type StarBotPluginConfigValue = string | number | boolean;
+export type StarBotJsonValue = string | number | boolean | null | StarBotJsonValue[] | { [key: string]: StarBotJsonValue };
+export type StarBotPluginConfigValue = StarBotJsonValue;
 export type StarBotQQApiResult<T = unknown> = { body: T; traceId: string | null };
 export type StarBotHttpResult<T = unknown> = { url: string; status: number; ok: boolean; headers: Record<string, string>; body: T };
 export type QQOpenApiEndpointId = 'deleteChannel' | 'getChannel' | 'getGuild' | 'updateChannel' | 'getGateway' | 'listGuildChannels' | 'createGuildChannel' | 'acknowledgeInteraction' | 'generateUrlLink' | 'getGlobalMenu' | 'updateGlobalMenu' | 'createCommandPanel' | 'listCommandPanels' | 'deleteCommandPanel' | 'getCommandPanel' | 'updateCommandPanelTarget' | 'updateCommandPanel' | 'getBotProfile' | 'prepareGroupMediaUpload' | 'finishGroupMediaPart' | 'listBotGuilds' | 'approveGroupJoinRequest' | 'getBotGroupState' | 'listGroupJoinRequests' | 'getGroupInfo' | 'uploadGroupMedia' | 'sendGroupMessage' | 'recallGroupMessage' | 'getGroupMuteSettings' | 'setGroupMemberMute' | 'createGroupJoinApprovalStrategy' | 'listGroupJoinApprovalStrategies' | 'updateGroupJoinApprovalStrategy' | 'deleteGroupJoinApprovalStrategy' | 'executeGroupJoinApprovalStrategy' | 'finishC2CMediaPart' | 'updateGroupJoinApprovalWhitelist' | 'prepareC2CMediaUpload' | 'uploadC2CMedia' | 'sendC2CMessage' | 'recallC2CMessage' | 'sendC2CStreamMessage';
@@ -24,6 +25,8 @@ export type StarBotPluginSdk<TConfig extends Record<string, StarBotPluginConfigV
     callEndpoint<T = unknown>(endpointId: QQOpenApiEndpointId, pathParams?: Record<string, string | number | bigint>, body?: unknown, query?: QQOpenApiQuery): Promise<StarBotQQApiResult<T>>;
     sendC2C<T = unknown>(userOpenid: string, payload: unknown): Promise<StarBotQQApiResult<T>>;
     sendGroup<T = unknown>(groupOpenid: string, payload: unknown): Promise<StarBotQQApiResult<T>>;
+    sendChannel<T = unknown>(channelId: string, payload: unknown): Promise<StarBotQQApiResult<T>>;
+    sendDms<T = unknown>(guildId: string, payload: unknown): Promise<StarBotQQApiResult<T>>;
     getBotProfile<T = unknown>(): Promise<StarBotQQApiResult<T>>;
     recallC2C<T = unknown>(userOpenid: string, messageId: string): Promise<StarBotQQApiResult<T>>;
     recallGroup<T = unknown>(groupOpenid: string, messageId: string): Promise<StarBotQQApiResult<T>>;
@@ -58,8 +61,30 @@ export type StarBotPlugin<TConfig extends Record<string, StarBotPluginConfigValu
 
 export function definePlugin<TConfig extends Record<string, StarBotPluginConfigValue>>(plugin: StarBotPlugin<TConfig>): StarBotPlugin<TConfig>;
 
+export type StarBotConfigState<TConfig extends Record<string, StarBotPluginConfigValue> = Record<string, StarBotPluginConfigValue>> = {
+  installation: { id: string; name: string; version: string; botId: string; botName: string };
+  config: TConfig;
+  configSchema: Array<Record<string, StarBotJsonValue | undefined>>;
+  capabilities: { records: boolean };
+};
+
+export type StarBotConfigRecord = { key: string; value: StarBotJsonValue; updatedAt: string };
+
+export type StarBotConfigBridge<TConfig extends Record<string, StarBotPluginConfigValue> = Record<string, StarBotPluginConfigValue>> = {
+  getState(): Promise<StarBotConfigState<TConfig>>;
+  saveConfig(config: TConfig): Promise<{ ok: true; config: TConfig }>;
+  records: {
+    list(): Promise<{ records: StarBotConfigRecord[] }>;
+    set(key: string, value: StarBotJsonValue): Promise<{ ok: true }>;
+    delete(key: string): Promise<{ ok: true }>;
+  };
+};
+
 declare global {
   const StarBot: {
     definePlugin: typeof definePlugin;
   };
+  interface Window {
+    readonly StarBotConfig: StarBotConfigBridge;
+  }
 }

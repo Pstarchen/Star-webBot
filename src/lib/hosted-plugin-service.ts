@@ -13,6 +13,7 @@ import { requestPluginHttp } from "@/lib/plugin-http";
 import { validateQQApiPath } from "@/lib/qq-api";
 import type {
   HostedPluginInstallation,
+  HostedPluginConfigValue,
   PluginCenterData,
   PluginDeveloperProject,
   PluginMarketplaceItem,
@@ -46,6 +47,7 @@ type VersionRow = {
   version: string;
   manifest_json: string;
   entry_code: string;
+  config_page_html: string | null;
   readme: string | null;
   package_sha256: string;
   package_size: number;
@@ -114,10 +116,12 @@ function accessibleInstallation(user: SessionUser, installationId: string) {
 
 function readInstallationConfig(installationId: string) {
   const rows = getDatabase().prepare("SELECT `key`, value_json FROM plugin_config_values WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
-  const config: Record<string, string | number | boolean> = {};
+  const config: Record<string, HostedPluginConfigValue> = {};
   for (const row of rows) {
     const value = parseJson<unknown>(row.value_json, null);
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") config[row.key] = value;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || Array.isArray(value)) {
+      config[row.key] = value as HostedPluginConfigValue;
+    }
   }
   return config;
 }
@@ -218,6 +222,7 @@ function installations(user: SessionUser): HostedPluginInstallation[] {
       lastRunAt: row.last_run_at,
       config: readInstallationConfig(row.id),
       configSchema: manifest.configSchema,
+      configPage: manifest.configPage ? { height: manifest.configPage.height } : null,
       events: manifest.events,
       permissions: manifest.permissions,
       commands: manifest.commands,
@@ -326,9 +331,9 @@ export async function importPluginPackage(user: SessionUser, packageBytes: Uint8
     }
     database.prepare(`
       INSERT INTO plugin_versions
-        (id, project_id, version, manifest_json, entry_code, readme, package_sha256, package_size, validation_json, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
-    `).run(versionId, projectId, parsed.manifest.version, JSON.stringify(parsed.manifest), parsed.entryCode, parsed.readme, parsed.packageSha256, parsed.packageSize, JSON.stringify(parsed.validation), now);
+        (id, project_id, version, manifest_json, entry_code, config_page_html, readme, package_sha256, package_size, validation_json, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+    `).run(versionId, projectId, parsed.manifest.version, JSON.stringify(parsed.manifest), parsed.entryCode, parsed.configPageHtml, parsed.readme, parsed.packageSha256, parsed.packageSize, JSON.stringify(parsed.validation), now);
   })();
   writeAuditLog(user.id, "hosted_plugin.import", "plugin_project", projectId, { versionId, version: parsed.manifest.version, sha256: parsed.packageSha256 });
   return { projectId, versionId, manifest: parsed.manifest, validation: parsed.validation };
@@ -397,6 +402,44 @@ export function updatePluginInstallation(user: SessionUser, installationId: stri
     }
   })();
   writeAuditLog(user.id, "hosted_plugin.installation.update", "plugin_installation", installationId, { enabled: input.enabled, priority: input.priority, versionId: version.id, configUpdated: Boolean(config) });
+}
+
+function configPageVersion(user: SessionUser, installationId: string) {
+  const installation = accessibleInstallation(user, installationId);
+  const version = getDatabase().prepare("SELECT manifest_json, config_page_html FROM plugin_versions WHERE id = ? AND status = 'active'").get(installation.version_id) as Pick<VersionRow, "manifest_json" | "config_page_html"> | undefined;
+  if (!version) throw new Error("PLUGIN_VERSION_NOT_FOUND");
+  const manifest = parseManifest(version.manifest_json);
+  if (!manifest.configPage || !version.config_page_html) throw new Error("PLUGIN_CONFIG_PAGE_NOT_FOUND");
+  return { installation, manifest, html: version.config_page_html };
+}
+
+export function getPluginConfigPage(user: SessionUser, installationId: string) {
+  const page = configPageVersion(user, installationId);
+  return { html: page.html, height: page.manifest.configPage!.height };
+}
+
+function assertConfigPageRecords(user: SessionUser, installationId: string) {
+  const page = configPageVersion(user, installationId);
+  if (!page.manifest.permissions.includes("storage:kv")) throw new Error("PLUGIN_CONFIG_PAGE_RECORDS_DENIED");
+  return page.installation;
+}
+
+export function listPluginRecords(user: SessionUser, installationId: string) {
+  assertConfigPageRecords(user, installationId);
+  const rows = getDatabase().prepare("SELECT `key`, value_json, updated_at FROM plugin_kv WHERE installation_id = ? ORDER BY `key` ASC").all(installationId) as Array<{ key: string; value_json: string; updated_at: string }>;
+  return rows.map((row) => ({ key: row.key, value: parseJson(row.value_json, null), updatedAt: row.updated_at }));
+}
+
+export function setPluginRecord(user: SessionUser, installationId: string, key: string, value: unknown) {
+  assertConfigPageRecords(user, installationId);
+  writeKvAction(installationId, { kind: "kv_set", key, value });
+  writeAuditLog(user.id, "hosted_plugin.record.set", "plugin_installation", installationId, { key });
+}
+
+export function deletePluginRecord(user: SessionUser, installationId: string, key: string) {
+  assertConfigPageRecords(user, installationId);
+  writeKvAction(installationId, { kind: "kv_delete", key });
+  writeAuditLog(user.id, "hosted_plugin.record.delete", "plugin_installation", installationId, { key });
 }
 
 export function uninstallPlugin(user: SessionUser, installationId: string) {
@@ -531,6 +574,10 @@ function assertActionPermission(action: HostedPluginAction, permissions: Set<str
 
 function replyTarget(eventType: string, data: unknown) {
   const payload = data && typeof data === "object" ? data as Record<string, unknown> : {};
+  if (eventType === "DIRECT_MESSAGE_CREATE") {
+    const guildId = payload.guild_id;
+    if (typeof guildId === "string" && guildId) return { type: "dms" as const, openid: guildId };
+  }
   if (eventType.startsWith("C2C")) {
     const author = payload.author && typeof payload.author === "object" ? payload.author as Record<string, unknown> : {};
     const openid = author.user_openid || author.id || payload.user_openid;
@@ -539,6 +586,10 @@ function replyTarget(eventType: string, data: unknown) {
   if (eventType.startsWith("GROUP")) {
     const openid = payload.group_openid || payload.group_id;
     if (typeof openid === "string" && openid) return { type: "group" as const, openid };
+  }
+  if (eventType === "AT_MESSAGE_CREATE" || eventType === "MESSAGE_CREATE") {
+    const channelId = payload.channel_id;
+    if (typeof channelId === "string" && channelId) return { type: "channel" as const, openid: channelId };
   }
   return null;
 }
@@ -562,7 +613,11 @@ async function executeAction(botId: string, eventType: string, eventData: unknow
       : action.format === "ark"
         ? { ark: action.ark, msg_type: 3 as const, ...context }
         : { keyboard: action.keyboard, msg_type: 2 as const, ...context };
-  return target.type === "c2c" ? client.sendC2CMessage(target.openid, body) : client.sendGroupMessage(target.openid, body);
+  if (target.type === "c2c") return client.sendC2CMessage(target.openid, body);
+  if (target.type === "group") return client.sendGroupMessage(target.openid, body);
+  const path = target.type === "channel" ? `/channels/${encodeURIComponent(target.openid)}/messages` : `/dms/${encodeURIComponent(target.openid)}/messages`;
+  const channelBody = action.format === "text" ? { content: action.content, ...context } : body;
+  return client.request(path, "POST", channelBody);
 }
 
 function writeKvAction(installationId: string, action: Extract<HostedPluginAction, { kind: "kv_set" | "kv_delete" }>) {
@@ -571,7 +626,10 @@ function writeKvAction(installationId: string, action: Extract<HostedPluginActio
     database.prepare("DELETE FROM plugin_kv WHERE installation_id = ? AND `key` = ?").run(installationId, action.key);
     return;
   }
-  const valueJson = JSON.stringify(action.value);
+  let valueJson: string | undefined;
+  try { valueJson = JSON.stringify(action.value); }
+  catch { throw new Error("PLUGIN_KV_VALUE_INVALID"); }
+  if (valueJson === undefined) throw new Error("PLUGIN_KV_VALUE_INVALID");
   if (Buffer.byteLength(valueJson, "utf8") > MAX_KV_VALUE_BYTES) throw new Error("PLUGIN_KV_VALUE_TOO_LARGE");
   const current = database.prepare("SELECT `key`, value_json FROM plugin_kv WHERE installation_id = ?").all(installationId) as Array<{ key: string; value_json: string }>;
   if (!current.some((row) => row.key === action.key) && current.length >= MAX_KV_ENTRIES) throw new Error("PLUGIN_KV_ENTRY_LIMIT");

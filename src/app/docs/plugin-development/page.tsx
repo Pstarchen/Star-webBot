@@ -30,6 +30,7 @@ const sections = [
   ["overview", "开发模型"],
   ["quickstart", "快速开始"],
   ["manifest", "插件清单"],
+  ["config", "配置页面"],
   ["events", "事件处理"],
   ["sdk", "SDK 能力"],
   ["permissions", "权限声明"],
@@ -46,6 +47,16 @@ const manifestFields = [
   ["events", "订阅的 QQ 事件名；使用 * 接收平台已收到的全部事件"],
   ["permissions", "按最小权限原则声明 SDK 能力"],
   ["configSchema", "安装实例的可配置字段，最多 40 项"],
+  ["configPage", "可选的沙箱 HTML 配置页，height 为 480-1200"],
+] as const;
+
+const eventRows = [
+  ["C2C_MESSAGE_CREATE", "QQ 单聊", "author.user_openid", "默认"],
+  ["GROUP_AT_MESSAGE_CREATE", "群内 @ 机器人", "group_openid", "默认"],
+  ["GROUP_MESSAGE_CREATE", "群全量消息", "group_openid", "需开启接收所有消息"],
+  ["AT_MESSAGE_CREATE", "公域频道 @", "channel_id", "默认"],
+  ["MESSAGE_CREATE", "私域频道全量消息", "channel_id", "仅私域机器人"],
+  ["DIRECT_MESSAGE_CREATE", "频道私信", "guild_id", "默认"],
 ] as const;
 
 const permissions = [
@@ -83,10 +94,12 @@ const manifestSnippet = `{
   "category": "消息互动",
   "tags": ["自动回复"],
   "entry": "index.js",
-  "events": ["C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"],
-  "permissions": ["reply:text", "storage:kv", "log:write"],
+  "events": ["C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE", "AT_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"],
+  "permissions": ["reply:text", "http:request", "storage:kv", "log:write"],
+  "configPage": { "entry": "config.html", "height": 880 },
   "configSchema": [
-    { "key": "keyword", "label": "关键词", "type": "text", "required": true, "default": "你好" }
+    { "key": "apiDefinitions", "label": "自定义 API", "type": "api-list", "required": true, "default": [] },
+    { "key": "replyRules", "label": "回复规则", "type": "reply-list", "required": true, "default": [] }
   ]
 }`;
 
@@ -94,12 +107,14 @@ const pluginSnippet = [
   "StarBot.definePlugin({",
   "  onEvent(event, sdk) {",
   "    const content = String(event.data && event.data.content || \"\");",
-  "    if (!content.includes(String(sdk.config.keyword))) return;",
+  "    const rules = Array.isArray(sdk.config.replyRules) ? sdk.config.replyRules : [];",
+  "    const rule = rules.find((item) => content.startsWith(String(item.prefix)));",
+  "    if (!rule) return;",
   "",
   "    const count = sdk.kv.get(\"count\", 0) + 1;",
   "    sdk.kv.set(\"count\", count);",
-  "    sdk.reply.text(\"消息已收到，第 \" + count + \" 次触发。\");",
-  "    sdk.log.info(\"keyword matched\", { count });",
+  "    sdk.reply.text(String(rule.reply.text || \"消息已收到\"));",
+  "    sdk.log.info(\"rule matched\", { id: rule.id, count });",
   "  },",
   "});",
 ].join("\n");
@@ -122,6 +137,24 @@ const httpSnippet = `const response = await sdk.http.request(
 );
 
 if (!response.ok) sdk.log.warn("external api failed", response.status);`;
+
+const configBridgeSnippet = `const state = await StarBotConfig.getState();
+
+await StarBotConfig.saveConfig({
+  ...state.config,
+  replyRules: nextRules
+});
+
+const { records } = await StarBotConfig.records.list();
+await StarBotConfig.records.set("stats.daily", { count: 12 });
+await StarBotConfig.records.delete("stats.daily");`;
+
+const qqConvenienceSnippet = `await sdk.qq.sendC2C(userOpenid, payload);
+await sdk.qq.sendGroup(groupOpenid, payload);
+await sdk.qq.sendChannel(channelId, payload);
+await sdk.qq.sendDms(guildId, payload);
+
+const result = await sdk.qq.request("GET", "/users/@me");`;
 
 function InlineCode({ children }: { children: React.ReactNode }) {
   return <code className="mono-data rounded bg-muted px-1.5 py-0.5 text-[0.9em] text-foreground">{children}</code>;
@@ -260,16 +293,32 @@ export default function PluginDevelopmentPage() {
                   <tbody className="divide-y">{manifestFields.map(([field, rule]) => <tr key={field}><td className="mono-data px-4 py-3 text-foreground">{field}</td><td className="px-4 py-3">{rule}</td></tr>)}</tbody>
                 </table>
               </div>
-              <p>配置字段支持 <InlineCode>text</InlineCode>、<InlineCode>textarea</InlineCode>、<InlineCode>number</InlineCode>、<InlineCode>boolean</InlineCode> 与 <InlineCode>select</InlineCode>。配置按安装实例保存，同一插件在不同机器人上可以使用不同值。</p>
+              <p>配置字段支持 <InlineCode>text</InlineCode>、<InlineCode>textarea</InlineCode>、<InlineCode>number</InlineCode>、<InlineCode>boolean</InlineCode>、<InlineCode>select</InlineCode>、<InlineCode>api-list</InlineCode> 与 <InlineCode>reply-list</InlineCode>。配置按安装实例保存，同一插件在不同机器人上可以使用不同值。</p>
             </DocSection>
 
-            <DocSection id="events" eyebrow="04 / EVENTS" title="每个事件只进入一个受控处理器">
+            <DocSection id="config" eyebrow="04 / CONFIG" title="插件可以提供完整的业务配置页面">
+              <p>声明 <InlineCode>configPage</InlineCode> 后，宿主会把 HTML 放入仅允许脚本的沙箱 iframe。页面不能直接联网、读取 Cookie 或父页面 DOM，只能使用 <InlineCode>window.StarBotConfig</InlineCode> 桥接。</p>
+              <CodeBlock label="config.html / bridge">{configBridgeSnippet}</CodeBlock>
+              <p><InlineCode>getState</InlineCode> 返回安装信息、当前配置、schema 和 records 能力；<InlineCode>saveConfig</InlineCode> 会再次执行服务端 schema 校验。记录接口需要 <InlineCode>storage:kv</InlineCode>，与运行时 KV 共用每安装 100 个 key、单值 16KB、总量 128KB 的配额。</p>
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-900">
+                配置页适合表格、标签页、编辑弹窗、预览和业务记录。它扩展的是呈现与交互，不会绕过清单权限、配置 schema 或安装实例所有权。
+              </div>
+            </DocSection>
+
+            <DocSection id="events" eyebrow="05 / EVENTS" title="明确事件、目标字段和 QQ 权限">
               <p>入口脚本必须且只能调用一次 <InlineCode>StarBot.definePlugin</InlineCode>。<InlineCode>event.data</InlineCode> 保留 QQ 官方事件载荷；事件字段应以 QQ API v2 对应事件文档为准。</p>
               <CodeBlock label="index.js">{pluginSnippet}</CodeBlock>
+              <div className="overflow-x-auto rounded-md border">
+                <table className="w-full min-w-[700px] text-left text-xs">
+                  <thead className="bg-muted/60 text-foreground"><tr><th className="px-4 py-3 font-semibold">事件</th><th className="px-4 py-3 font-semibold">场景</th><th className="px-4 py-3 font-semibold">回复目标字段</th><th className="px-4 py-3 font-semibold">可用性</th></tr></thead>
+                  <tbody className="divide-y">{eventRows.map(([event, scene, target, availability]) => <tr key={event}><td className="mono-data px-4 py-3 text-foreground">{event}</td><td className="px-4 py-3">{scene}</td><td className="mono-data px-4 py-3">{target}</td><td className="px-4 py-3">{availability}</td></tr>)}</tbody>
+                </table>
+              </div>
+              <p>宿主默认 Intent 是 <InlineCode>(1 &lt;&lt; 12) | (1 &lt;&lt; 25) | (1 &lt;&lt; 30)</InlineCode>，数值 <InlineCode>1107300352</InlineCode>。清单 events 只做过滤，不会替机器人开通私域、互动、论坛等 QQ 特殊权限。非消息事件不能自动推断回复目标，应显式调用 <InlineCode>sdk.qq.send*</InlineCode>。</p>
               <p><InlineCode>onEvent</InlineCode> 支持同步或异步函数。运行时不提供 Node.js 模块、文件系统、环境变量、定时器、原生 fetch 或套接字；网络访问必须通过受控 SDK。</p>
             </DocSection>
 
-            <DocSection id="sdk" eyebrow="05 / SDK" title="回复、QQ API、外部 HTTP 与状态">
+            <DocSection id="sdk" eyebrow="06 / SDK" title="回复、QQ API、外部 HTTP 与状态">
               <div className="grid gap-3 sm:grid-cols-2">
                 {[
                   [TerminalSquare, "sdk.reply", "按事件场景回复文本、Markdown、Ark 或键盘。"],
@@ -285,13 +334,17 @@ export default function PluginDevelopmentPage() {
               </div>
               <h3 className="pt-2 text-sm font-semibold text-foreground">QQ OpenAPI</h3>
               <CodeBlock label="QQ API request">{qqSnippet}</CodeBlock>
+              <CodeBlock label="QQ convenience methods">{qqConvenienceSnippet}</CodeBlock>
               <p>平台统一请求 <InlineCode>https://api.bot.qq.com</InlineCode> 并补充鉴权头。返回值包含 <InlineCode>body</InlineCode> 与 <InlineCode>traceId</InlineCode>；Trace ID 来自 <InlineCode>X-Tps-trace-ID</InlineCode> 或响应体 <InlineCode>trace_id</InlineCode>，应随错误日志保留。</p>
+              <p><InlineCode>sendC2C</InlineCode>、<InlineCode>sendGroup</InlineCode>、<InlineCode>sendChannel</InlineCode> 和 <InlineCode>sendDms</InlineCode> 分别发送 QQ 单聊、群聊、频道和频道私信。通用 <InlineCode>request</InlineCode> 只接受安全的 QQ 相对路径；<InlineCode>callEndpoint</InlineCode> 负责内置端点的路径参数编码和 query 拼接。</p>
+              <h3 className="pt-2 text-sm font-semibold text-foreground">富媒体</h3>
+              <p>单聊与群聊先调用对应 <InlineCode>/files</InlineCode> 上传公网 URL，取得 <InlineCode>file_info</InlineCode>，再用 <InlineCode>msg_type: 7</InlineCode> 发送。频道图片可使用 <InlineCode>image</InlineCode> URL；QQ 当前没有公开频道 <InlineCode>/files</InlineCode>，频道视频和音频应退化为公网链接。</p>
               <h3 className="pt-2 text-sm font-semibold text-foreground">外部 HTTP</h3>
               <CodeBlock label="External HTTP request">{httpSnippet}</CodeBlock>
               <p>外部请求最多跟随 3 次重定向，请求体最大 32KB、响应体最大 64KB。URL 内嵌凭据、localhost、内网/保留地址及危险请求头会被拒绝；跨域重定向会移除 authorization 与 cookie。</p>
             </DocSection>
 
-            <DocSection id="permissions" eyebrow="06 / SECURITY" title="只申请代码实际使用的权限">
+            <DocSection id="permissions" eyebrow="07 / SECURITY" title="只申请代码实际使用的权限">
               <div className="overflow-x-auto rounded-md border">
                 <table className="w-full min-w-[560px] text-left text-xs">
                   <thead className="bg-muted/60 text-foreground"><tr><th className="px-4 py-3 font-semibold">权限</th><th className="px-4 py-3 font-semibold">允许的能力</th></tr></thead>
@@ -301,7 +354,7 @@ export default function PluginDevelopmentPage() {
               <p>权限在副作用发生前验证。插件不能读取机器人密钥、平台数据库、宿主文件或环境变量。<InlineCode>qq:api</InlineCode> 与 <InlineCode>http:request</InlineCode> 相互独立，不能用外部 HTTP 绕过 QQ 请求校验。</p>
             </DocSection>
 
-            <DocSection id="limits" eyebrow="07 / LIMITS" title="为共享运行时控制资源消耗">
+            <DocSection id="limits" eyebrow="08 / LIMITS" title="为共享运行时控制资源消耗">
               <div className="grid gap-px overflow-hidden rounded-md border bg-border sm:grid-cols-2 lg:grid-cols-3">
                 {runtimeLimits.map(([value, label]) => (
                   <div key={label} className="bg-card p-4"><div className="mono-data text-base font-semibold text-foreground">{value}</div><div className="mt-1 text-xs leading-5">{label}</div></div>
@@ -310,7 +363,7 @@ export default function PluginDevelopmentPage() {
               <p>ZIP 最多 40 个文件，单文件最大 1MB，总解压大小最大 4MB；插件连续 5 次失败后，安装实例会自动停用。不要在单次事件处理中循环重试 QQ 429 或外部 5xx。</p>
             </DocSection>
 
-            <DocSection id="release" eyebrow="08 / RELEASE" title="私有验证通过后再申请上架">
+            <DocSection id="release" eyebrow="09 / RELEASE" title="私有验证通过后再申请上架">
               <ol className="space-y-3">
                 {[
                   "首次导入创建私有项目与版本，可安装到自己的机器人。",
@@ -323,7 +376,7 @@ export default function PluginDevelopmentPage() {
               <div className="flex items-start gap-3 rounded-md border bg-card p-4 text-xs leading-6"><PackageCheck size={17} className="mt-0.5 shrink-0 text-emerald-600" /><p>仓库中的测试插件可在开发者中心直接下载，用于先验证导入、配置、事件与日志链路。</p></div>
             </DocSection>
 
-            <DocSection id="troubleshooting" eyebrow="09 / DEBUG" title="从安装状态、权限和 Trace ID 开始排查">
+            <DocSection id="troubleshooting" eyebrow="10 / DEBUG" title="从安装状态、权限和 Trace ID 开始排查">
               <div className="space-y-2">
                 {[
                   "确认安装实例已启用、机器人在线，事件类型包含在清单 events 中。",

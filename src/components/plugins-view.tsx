@@ -28,11 +28,13 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { FilePicker } from "@/components/ui/file-picker";
 import { Input, Textarea } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
+import { PluginConfigPage } from "@/components/plugin-config-page";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { formatApiError } from "@/lib/api-error";
 import type {
   Bot,
+  HostedPluginConfigValue,
   HostedPluginConfigField,
   HostedPluginInstallation,
   PluginCenterData,
@@ -87,7 +89,7 @@ function InlineError({ message }: { message: string }) {
   return <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-red-700">{message}</div>;
 }
 
-function ConfigField({ field, value, onChange }: { field: HostedPluginConfigField; value: unknown; onChange: (value: string | number | boolean) => void }) {
+function ConfigField({ field, value, onChange }: { field: HostedPluginConfigField; value: unknown; onChange: (value: HostedPluginConfigValue) => void }) {
   if (field.type === "boolean") {
     return (
       <label className="flex items-start justify-between gap-4 rounded-md border bg-muted/25 px-3 py-3">
@@ -112,6 +114,31 @@ function ConfigField({ field, value, onChange }: { field: HostedPluginConfigFiel
           ariaLabel={field.label}
         />
         {field.description && <span className="mt-1.5 block text-[11px] leading-5 text-muted-foreground">{field.description}</span>}
+      </label>
+    );
+  }
+  if (field.type === "api-list" || field.type === "reply-list") {
+    return (
+      <label className="block">
+        <span className="field-label">{field.label}{field.required ? " *" : ""}</span>
+        <Textarea
+          defaultValue={JSON.stringify(value ?? field.default ?? [], null, 2)}
+          onChange={(event) => {
+            try {
+              const parsed = JSON.parse(event.target.value) as unknown;
+              if (!Array.isArray(parsed)) throw new Error("not an array");
+              event.target.setCustomValidity("");
+              onChange(parsed as HostedPluginConfigValue);
+            } catch {
+              event.target.setCustomValidity("请输入有效的 JSON 数组");
+            }
+          }}
+          onBlur={(event) => event.currentTarget.reportValidity()}
+          required={field.required}
+          spellCheck={false}
+          className="mono-data min-h-40 resize-y text-xs leading-5"
+        />
+        <span className="mt-1.5 block text-[11px] leading-5 text-muted-foreground">{field.description || "该插件未提供自定义配置页面，使用 JSON 数组备用编辑器。"}</span>
       </label>
     );
   }
@@ -194,7 +221,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
   const [installPriority, setInstallPriority] = useState("50");
   const [detailPlugin, setDetailPlugin] = useState<PluginMarketplaceItem | null>(null);
   const [configInstallation, setConfigInstallation] = useState<HostedPluginInstallation | null>(null);
-  const [configValues, setConfigValues] = useState<Record<string, string | number | boolean>>({});
+  const [configValues, setConfigValues] = useState<Record<string, HostedPluginConfigValue>>({});
   const [configPriority, setConfigPriority] = useState("50");
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewApproved, setReviewApproved] = useState(true);
@@ -484,7 +511,38 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
 
       <Dialog.Root open={Boolean(installTarget)} onOpenChange={(open) => !open && setInstallTarget(null)}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" /><Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 w-[calc(100%-32px)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6"><DialogHeader title={`安装 ${installTarget?.name || "插件"}`} description="选择运行该插件的机器人，安装后可完成配置再启用。" /><form onSubmit={install} className="mt-5 space-y-4"><label className="block"><span className="field-label">机器人</span><Select value={installBotId} onValueChange={setInstallBotId} options={bots.map((bot) => ({ value: bot.id, label: bot.name }))} placeholder="请选择机器人" ariaLabel="选择安装机器人" /></label><label className="block"><span className="field-label">执行优先级</span><Input type="number" min={1} max={100} value={installPriority} onChange={(event) => setInstallPriority(event.target.value)} required /><span className="mt-1.5 block text-[11px] text-muted-foreground">数值越小越先处理事件。</span></label>{!bots.length && <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">请先添加机器人。</div>}<InlineError message={error} /><Button type="submit" className="w-full" disabled={!bots.length || !installBotId || busy === "install"}><Download size={14} />{busy === "install" ? "正在安装..." : "安装到机器人"}</Button></form></Dialog.Content></Dialog.Portal></Dialog.Root>
 
-      <Dialog.Root open={Boolean(configInstallation)} onOpenChange={(open) => !open && setConfigInstallation(null)}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" /><Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-32px)] w-[calc(100%-32px)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6"><DialogHeader title={`配置 ${configInstallation?.name || "插件"}`} description={`${configInstallation?.botName || "机器人"} · 配置保存后立即用于下一次事件。`} /><form onSubmit={saveConfig} className="mt-5 space-y-4"><label className="block"><span className="field-label">执行优先级</span><Input type="number" min={1} max={100} value={configPriority} onChange={(event) => setConfigPriority(event.target.value)} required /></label>{configInstallation?.configSchema.map((field) => <ConfigField key={field.key} field={field} value={configValues[field.key] ?? field.default} onChange={(value) => setConfigValues((current) => ({ ...current, [field.key]: value }))} />)}{configInstallation?.configSchema.length === 0 && <div className="border bg-muted/30 px-3 py-4 text-xs text-muted-foreground">该插件没有可配置项。</div>}<InlineError message={error} /><Button type="submit" className="w-full" disabled={busy === `config:${configInstallation?.id}`}><Settings2 size={14} />保存配置</Button></form></Dialog.Content></Dialog.Portal></Dialog.Root>
+      <Dialog.Root open={Boolean(configInstallation)} onOpenChange={(open) => !open && setConfigInstallation(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
+          <Dialog.Content className={`modal-panel fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-32px)] w-[calc(100%-32px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6 ${configInstallation?.configPage ? "max-w-6xl" : "max-w-lg"}`}>
+            <DialogHeader title={`配置 ${configInstallation?.name || "插件"}`} description={`${configInstallation?.botName || "机器人"} · 配置保存后立即用于下一次事件。`} />
+            <form onSubmit={saveConfig} className="mt-5 space-y-4">
+              <label className="block sm:max-w-52">
+                <span className="field-label">执行优先级</span>
+                <Input type="number" min={1} max={100} value={configPriority} onChange={(event) => setConfigPriority(event.target.value)} required />
+              </label>
+              {configInstallation?.configPage ? (
+                <PluginConfigPage
+                  installation={configInstallation}
+                  config={configValues}
+                  onConfigSaved={async (nextConfig) => {
+                    setConfigValues(nextConfig);
+                    await onRefresh();
+                  }}
+                  onError={setError}
+                />
+              ) : (
+                <>
+                  {configInstallation?.configSchema.map((field) => <ConfigField key={field.key} field={field} value={configValues[field.key] ?? field.default} onChange={(value) => setConfigValues((current) => ({ ...current, [field.key]: value }))} />)}
+                  {configInstallation?.configSchema.length === 0 && <div className="border bg-muted/30 px-3 py-4 text-xs text-muted-foreground">该插件没有可配置项。</div>}
+                </>
+              )}
+              <InlineError message={error} />
+              <Button type="submit" className="w-full" disabled={busy === `config:${configInstallation?.id}`}><Settings2 size={14} />{configInstallation?.configPage ? "保存运行设置" : "保存配置"}</Button>
+            </form>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       <Dialog.Root open={Boolean(detailPlugin)} onOpenChange={(open) => !open && setDetailPlugin(null)}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" /><Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-32px)] w-[calc(100%-32px)] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6"><DialogHeader title={detailPlugin?.name || "插件详情"} description={`${detailPlugin?.author || ""} · ${detailPlugin?.category || ""} · v${detailPlugin?.version || ""}`} />{detailPlugin && <div className="mt-5 space-y-5"><p className="text-sm leading-6 text-muted-foreground">{detailPlugin.description}</p><div><div className="data-label">事件与权限</div><div className="mt-2 flex flex-wrap gap-1.5">{[...detailPlugin.events, ...detailPlugin.permissions].map((item) => <Badge key={item} variant="secondary" className="mono-data">{item}</Badge>)}</div></div>{detailPlugin.commands.length > 0 && <div><div className="data-label">使用指令</div><div className="mt-2 divide-y border">{detailPlugin.commands.map((command) => <div key={command.name} className="flex items-start justify-between gap-4 px-3 py-3 text-xs"><span className="font-medium">{command.name}</span><span className="text-right text-muted-foreground">{command.description}</span></div>)}</div></div>}<Button className="w-full" onClick={() => openInstall({ projectId: detailPlugin.id, versionId: detailPlugin.versionId, name: detailPlugin.name })}><Download size={14} />安装到机器人</Button></div>}</Dialog.Content></Dialog.Portal></Dialog.Root>
 

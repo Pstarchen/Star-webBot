@@ -23,6 +23,8 @@ function pluginPackage(input: {
   events?: string[];
   code?: string;
   configSchema?: unknown[];
+  configPage?: { entry: string; height: number };
+  configPageHtml?: string;
 }) {
   const manifest = {
     schemaVersion: 1,
@@ -38,6 +40,7 @@ function pluginPackage(input: {
     permissions: input.permissions || ["storage:kv", "log:write"],
     commands: [{ name: "计数", description: "累计收到的消息事件" }],
     configSchema: input.configSchema || [{ key: "step", label: "步长", type: "number", required: true, default: 1, min: 1, max: 10 }],
+    ...(input.configPage ? { configPage: input.configPage } : {}),
   };
   const code = input.code || `StarBot.definePlugin({
     onEvent(event, sdk) {
@@ -45,11 +48,13 @@ function pluginPackage(input: {
       sdk.log.info("count updated", event.type);
     }
   });`;
-  return zipSync({
+  const files: Record<string, Uint8Array> = {
     "starbot.plugin.json": strToU8(JSON.stringify(manifest)),
     "index.js": strToU8(code),
     "README.md": strToU8("# Test plugin"),
-  });
+  };
+  if (input.configPage && input.configPageHtml !== undefined) files[input.configPage.entry] = strToU8(input.configPageHtml);
+  return zipSync(files);
 }
 
 beforeAll(async () => {
@@ -98,6 +103,37 @@ describe("hosted plugin packages", () => {
   it("accepts the controlled HTTP permission", () => {
     const parsed = packageModule.parseHostedPluginPackage(pluginPackage({ permissions: ["http:request"] }));
     expect(parsed.manifest.permissions).toEqual(["http:request"]);
+  });
+
+  it("loads a declared custom configuration page and rejects a missing page", () => {
+    const configPage = { entry: "config.html", height: 880 };
+    const parsed = packageModule.parseHostedPluginPackage(pluginPackage({
+      configPage,
+      configPageHtml: "<main><h1>插件配置</h1></main>",
+    }));
+    expect(parsed.manifest.configPage).toEqual(configPage);
+    expect(parsed.configPageHtml).toContain("插件配置");
+    expect(() => packageModule.parseHostedPluginPackage(pluginPackage({ configPage })))
+      .toThrow("PLUGIN_CONFIG_PAGE_MISSING");
+  });
+
+  it("validates api-list and reply-list configuration values", () => {
+    const parsed = packageModule.parseHostedPluginPackage(pluginPackage({
+      configSchema: [
+        { key: "apis", label: "API", type: "api-list", required: true, default: [] },
+        { key: "rules", label: "回复", type: "reply-list", required: true, default: [] },
+      ],
+    }));
+    const config = packageModule.validatePluginConfig(parsed.manifest, {
+      apis: [{ id: "weather", name: "天气", method: "GET", url: "https://api.example.com/weather", headers: {} }],
+      rules: [{ id: "weatherRule", name: "天气回复", prefix: "天气", match: "exact", apis: ["weather"], reply: { text: "晴", media: [] } }],
+    });
+    expect(config.apis).toHaveLength(1);
+    expect(config.rules).toHaveLength(1);
+    expect(() => packageModule.validatePluginConfig(parsed.manifest, {
+      apis: [{ id: "invalid id", name: "天气", method: "GET", url: "https://api.example.com", headers: {} }],
+      rules: [],
+    })).toThrow("PLUGIN_CONFIG_TYPE:apis");
   });
 });
 
@@ -284,6 +320,29 @@ describe("hosted plugin runtime", () => {
     expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "异步测试机器人:1:trace-profile" }]);
   });
 
+  it("exposes channel and channel DMS message helpers", async () => {
+    const requests: Array<{ method: string; path: string; body: unknown }> = [];
+    const result = await runtimeModule.executeHostedPlugin({
+      code: `StarBot.definePlugin({ async onEvent(event, sdk) {
+        await sdk.qq.sendChannel("channel id", { content: "频道消息" });
+        await sdk.qq.sendDms("guild id", { content: "频道私信" });
+      }});`,
+      event: { type: "AT_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      qqRequest: async (method, requestPath, body) => {
+        requests.push({ method, path: requestPath, body });
+        return { body: { id: "sent" }, traceId: "trace-channel" };
+      },
+    });
+
+    expect(requests).toEqual([
+      { method: "POST", path: "/channels/channel%20id/messages", body: { content: "频道消息" } },
+      { method: "POST", path: "/dms/guild%20id/messages", body: { content: "频道私信" } },
+    ]);
+    expect(result.qqRequestCount).toBe(2);
+  });
+
   it("lets async plugins consume controlled HTTP responses", async () => {
     const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
     const result = await runtimeModule.executeHostedPlugin({
@@ -376,11 +435,20 @@ describe("hosted plugin lifecycle", () => {
 
     const imported = await serviceModule.importPluginPackage(user, pluginPackage({
       configSchema: [{ key: "step", label: "步长", type: "number", required: true, min: 1, max: 10 }],
+      configPage: { entry: "config.html", height: 760 },
+      configPageHtml: "<main>计数器设置</main>",
     }));
     const installed = serviceModule.installPlugin(user, { projectId: imported.projectId, versionId: imported.versionId, botId, priority: 20 });
     databaseModule.getDatabase().prepare("DELETE FROM plugin_config_values WHERE installation_id = ?").run(installed.installationId);
     expect(() => serviceModule.updatePluginInstallation(user, installed.installationId, { enabled: true })).toThrow("PLUGIN_CONFIG_REQUIRED:step");
     serviceModule.updatePluginInstallation(user, installed.installationId, { enabled: true, config: { step: 3 } });
+    expect(serviceModule.getPluginConfigPage(user, installed.installationId)).toEqual({ html: "<main>计数器设置</main>", height: 760 });
+    serviceModule.setPluginRecord(user, installed.installationId, "dashboard.note", { text: "由配置页维护" });
+    expect(serviceModule.listPluginRecords(user, installed.installationId)).toEqual([
+      expect.objectContaining({ key: "dashboard.note", value: { text: "由配置页维护" } }),
+    ]);
+    serviceModule.deletePluginRecord(user, installed.installationId, "dashboard.note");
+    expect(serviceModule.listPluginRecords(user, installed.installationId)).toEqual([]);
 
     await expect(serviceModule.dispatchHostedPlugins(botId, "C2C_MESSAGE_CREATE", { id: "hosted-event-1", content: "hello" }))
       .resolves.toEqual({ executed: 1, stopped: false });
@@ -395,7 +463,7 @@ describe("hosted plugin lifecycle", () => {
     expect(admin).not.toBeNull();
     serviceModule.reviewPlugin(admin!, review.reviewId, { approved: true, featured: true });
     const center = serviceModule.listPluginCenter(user);
-    expect(center.installations[0]).toMatchObject({ id: installed.installationId, projectStatus: "published", enabled: true, priority: 20, config: { step: 3 } });
+    expect(center.installations[0]).toMatchObject({ id: installed.installationId, projectStatus: "published", enabled: true, priority: 20, config: { step: 3 }, configPage: { height: 760 } });
     expect(center.marketplace.find((plugin) => plugin.id === imported.projectId)).toMatchObject({ featured: true, owned: true });
 
     expect(() => serviceModule.updateMarketplacePlugin(user, imported.projectId, { name: "越权修改" })).toThrow("ADMIN_REQUIRED");
@@ -453,8 +521,11 @@ describe("hosted plugin lifecycle", () => {
       permissions: [],
       code: "StarBot.definePlugin({ onEvent(event, sdk) { sdk.kv.set('forbidden', true); } });",
       configSchema: [],
+      configPage: { entry: "config.html", height: 720 },
+      configPageHtml: "<main>无记录权限</main>",
     }));
     const installed = serviceModule.installPlugin(user!, { projectId: imported.projectId, botId: bot.id });
+    expect(() => serviceModule.listPluginRecords(user!, installed.installationId)).toThrow("PLUGIN_CONFIG_PAGE_RECORDS_DENIED");
     serviceModule.updatePluginInstallation(user!, installed.installationId, { enabled: true });
     for (let index = 0; index < serviceModule.hostedPluginLimits.autoDisableFailures; index += 1) {
       await serviceModule.dispatchHostedPlugins(bot.id, "C2C_MESSAGE_CREATE", { id: `denied-${index}` });

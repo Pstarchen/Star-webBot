@@ -2,12 +2,57 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { unzipSync } from "fflate";
 import { z } from "zod";
+import type { HostedPluginConfigValue } from "@/types/platform";
 
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024;
 const MAX_UNPACKED_BYTES = 4 * 1024 * 1024;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_ENTRY_BYTES = 256 * 1024;
 const MAX_FILE_COUNT = 40;
+const MAX_STRUCTURED_CONFIG_BYTES = 128 * 1024;
+
+const pluginApiIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
+
+export const pluginApiDefinitionSchema = z.object({
+  id: pluginApiIdSchema,
+  name: z.string().trim().min(1).max(80),
+  method: z.enum(["GET", "POST"]),
+  url: z.string().trim().min(1).max(2_000),
+  headers: z.record(
+    z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/),
+    z.string().max(2_000),
+  ).default({}),
+  body: z.json().optional(),
+}).strict().superRefine((definition, context) => {
+  if (Object.keys(definition.headers).length > 20) {
+    context.addIssue({ code: "custom", message: "请求头不能超过 20 项", path: ["headers"] });
+  }
+  if (definition.body !== undefined && Buffer.byteLength(JSON.stringify(definition.body), "utf8") > 16 * 1024) {
+    context.addIssue({ code: "custom", message: "请求体不能超过 16 KB", path: ["body"] });
+  }
+});
+
+export const pluginReplyMediaSchema = z.object({
+  type: z.enum(["image", "video", "audio"]),
+  url: z.string().trim().min(1).max(2_000),
+  caption: z.string().trim().max(500).optional(),
+}).strict();
+
+export const pluginReplyRuleSchema = z.object({
+  id: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),
+  name: z.string().trim().min(1).max(80),
+  prefix: z.string().trim().min(1).max(200),
+  match: z.enum(["exact", "fuzzy"]),
+  threshold: z.number().min(0.1).max(1).optional(),
+  apis: z.array(pluginApiIdSchema).max(3).default([]),
+  reply: z.object({
+    text: z.string().max(4_000).optional(),
+    media: z.array(pluginReplyMediaSchema).max(3).default([]),
+  }).strict().refine((reply) => Boolean(reply.text?.trim() || reply.media.length), "回复必须包含文本或媒体"),
+}).strict();
+
+const pluginApiListSchema = z.array(pluginApiDefinitionSchema).max(50);
+const pluginReplyListSchema = z.array(pluginReplyRuleSchema).max(100);
 
 const pluginConfigOptionSchema = z.object({
   label: z.string().trim().min(1).max(80),
@@ -18,9 +63,9 @@ export const pluginConfigFieldSchema = z.object({
   key: z.string().regex(/^[a-z][a-zA-Z0-9_]{0,39}$/),
   label: z.string().trim().min(1).max(60),
   description: z.string().trim().max(200).optional(),
-  type: z.enum(["text", "textarea", "number", "boolean", "select"]),
+  type: z.enum(["text", "textarea", "number", "boolean", "select", "api-list", "reply-list"]),
   required: z.boolean().default(false),
-  default: z.union([z.string().max(4_000), z.number(), z.boolean()]).optional(),
+  default: z.union([z.string().max(4_000), z.number(), z.boolean(), pluginApiListSchema, pluginReplyListSchema]).optional(),
   placeholder: z.string().trim().max(120).optional(),
   min: z.number().finite().optional(),
   max: z.number().finite().optional(),
@@ -31,6 +76,15 @@ export const pluginConfigFieldSchema = z.object({
   }
   if (field.type !== "select" && field.options) {
     context.addIssue({ code: "custom", message: "仅 select 类型可以提供 options", path: ["options"] });
+  }
+  if (field.type === "api-list" && field.default !== undefined && !pluginApiListSchema.safeParse(field.default).success) {
+    context.addIssue({ code: "custom", message: "api-list 默认值必须是有效的 API 数组", path: ["default"] });
+  }
+  if (field.type === "reply-list" && field.default !== undefined && !pluginReplyListSchema.safeParse(field.default).success) {
+    context.addIssue({ code: "custom", message: "reply-list 默认值必须是有效的回复数组", path: ["default"] });
+  }
+  if (!["api-list", "reply-list"].includes(field.type) && Array.isArray(field.default)) {
+    context.addIssue({ code: "custom", message: "仅列表类型可以使用数组默认值", path: ["default"] });
   }
   if (field.min !== undefined && field.max !== undefined && field.min > field.max) {
     context.addIssue({ code: "custom", message: "min 不能大于 max", path: ["min"] });
@@ -63,9 +117,16 @@ export const hostedPluginManifestSchema = z.object({
     description: z.string().trim().min(1).max(120),
   })).max(30).default([]),
   configSchema: z.array(pluginConfigFieldSchema).max(40).default([]),
+  configPage: z.object({
+    entry: z.string().trim().min(1).max(128),
+    height: z.number().int().min(480).max(1_200).default(720),
+  }).strict().optional(),
 }).superRefine((manifest, context) => {
   if (!isSafeArchivePath(manifest.entry) || !manifest.entry.endsWith(".js")) {
     context.addIssue({ code: "custom", message: "entry 必须是插件包内的安全 .js 路径", path: ["entry"] });
+  }
+  if (manifest.configPage && (!isSafeArchivePath(manifest.configPage.entry) || !manifest.configPage.entry.endsWith(".html"))) {
+    context.addIssue({ code: "custom", message: "configPage.entry 必须是插件包内的安全 .html 路径", path: ["configPage", "entry"] });
   }
   for (const [field, values] of [["events", manifest.events], ["permissions", manifest.permissions], ["tags", manifest.tags]] as const) {
     if (new Set(values).size !== values.length) context.addIssue({ code: "custom", message: `${field} 不能包含重复项`, path: [field] });
@@ -79,6 +140,7 @@ export type HostedPluginManifest = z.infer<typeof hostedPluginManifestSchema>;
 export type ParsedPluginPackage = {
   manifest: HostedPluginManifest;
   entryCode: string;
+  configPageHtml: string | null;
   readme: string | null;
   packageSha256: string;
   packageSize: number;
@@ -152,11 +214,18 @@ export function parseHostedPluginPackage(input: Uint8Array): ParsedPluginPackage
   const entryCode = decodeUtf8(entryBytes, "PLUGIN_ENTRY");
   if (!entryCode.trim()) throw new Error("PLUGIN_ENTRY_EMPTY");
 
+  const configPageBytes = parsedManifest.data.configPage ? archive[parsedManifest.data.configPage.entry] : undefined;
+  if (parsedManifest.data.configPage && !configPageBytes) throw new Error("PLUGIN_CONFIG_PAGE_MISSING");
+  if (configPageBytes && configPageBytes.length > MAX_ENTRY_BYTES) throw new Error("PLUGIN_CONFIG_PAGE_TOO_LARGE");
+  const configPageHtml = configPageBytes ? decodeUtf8(configPageBytes, "PLUGIN_CONFIG_PAGE") : null;
+  if (configPageBytes && !configPageHtml?.trim()) throw new Error("PLUGIN_CONFIG_PAGE_EMPTY");
+
   const readmeBytes = archive["README.md"] || archive["readme.md"];
   const files = Object.entries(archive).map(([name, bytes]) => ({ name, bytes: bytes.length })).sort((left, right) => left.name.localeCompare(right.name));
   return {
     manifest: parsedManifest.data,
     entryCode,
+    configPageHtml,
     readme: readmeBytes ? decodeUtf8(readmeBytes, "PLUGIN_README").slice(0, 100_000) : null,
     packageSha256: createHash("sha256").update(input).digest("hex"),
     packageSize: input.length,
@@ -174,17 +243,30 @@ export function validatePluginConfig(manifest: HostedPluginManifest, input: unkn
   const allowedKeys = new Set(manifest.configSchema.map((field) => field.key));
   if (Object.keys(values).some((key) => !allowedKeys.has(key))) throw new Error("PLUGIN_CONFIG_UNKNOWN_KEY");
 
-  const output: Record<string, string | number | boolean> = {};
+  const output: Record<string, HostedPluginConfigValue> = {};
   for (const field of manifest.configSchema) {
     const value = values[field.key] ?? field.default;
     if (value === undefined || value === "") {
       if (field.required) throw new Error(`PLUGIN_CONFIG_REQUIRED:${field.key}`);
       continue;
     }
-    if (["text", "textarea", "select"].includes(field.type)) {
+    if (["api-list", "reply-list"].includes(field.type)) {
+      const schema = field.type === "api-list" ? pluginApiListSchema : pluginReplyListSchema;
+      const parsed = schema.safeParse(value);
+      if (!parsed.success) throw new Error(`PLUGIN_CONFIG_TYPE:${field.key}:${parsed.error.issues[0]?.message || "invalid list"}`);
+      if (Buffer.byteLength(JSON.stringify(parsed.data), "utf8") > MAX_STRUCTURED_CONFIG_BYTES) throw new Error(`PLUGIN_CONFIG_TOO_LARGE:${field.key}`);
+      output[field.key] = parsed.data;
+      continue;
+    }
+    if (["text", "textarea"].includes(field.type)) {
       if (typeof value !== "string" || value.length > 4_000) throw new Error(`PLUGIN_CONFIG_TYPE:${field.key}`);
-      if (field.type === "select" && !field.options?.some((option) => option.value === value)) throw new Error(`PLUGIN_CONFIG_OPTION:${field.key}`);
       output[field.key] = value;
+      continue;
+    }
+    if (field.type === "select") {
+      if (!["string", "number", "boolean"].includes(typeof value)) throw new Error(`PLUGIN_CONFIG_TYPE:${field.key}`);
+      if (!field.options?.some((option) => option.value === value)) throw new Error(`PLUGIN_CONFIG_OPTION:${field.key}`);
+      output[field.key] = value as string | number | boolean;
       continue;
     }
     if (field.type === "number") {

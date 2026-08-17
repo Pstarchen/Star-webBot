@@ -47,7 +47,7 @@ function migrateSqlite(database: Database.Database) {
       client_secret_cipher TEXT NOT NULL,
       environment TEXT NOT NULL CHECK(environment IN ('production', 'sandbox')),
       connection_mode TEXT NOT NULL DEFAULT 'websocket' CHECK(connection_mode IN ('websocket', 'webhook')),
-      intents INTEGER NOT NULL DEFAULT 33554432,
+      intents INTEGER NOT NULL DEFAULT 1107300352,
       status TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('online', 'degraded', 'offline')),
       gateway_session_id TEXT,
       gateway_sequence INTEGER,
@@ -112,6 +112,7 @@ function migrateSqlite(database: Database.Database) {
       version TEXT NOT NULL,
       manifest_json TEXT NOT NULL,
       entry_code TEXT NOT NULL,
+      config_page_html TEXT,
       readme TEXT,
       package_sha256 TEXT NOT NULL,
       package_size INTEGER NOT NULL CHECK(package_size >= 0),
@@ -426,6 +427,9 @@ function migrateSqlite(database: Database.Database) {
   database.prepare("UPDATE plugin_market_reviews SET pending_project_id = project_id WHERE status = 'pending' AND pending_project_id IS NULL").run();
   database.exec("CREATE UNIQUE INDEX IF NOT EXISTS plugin_market_reviews_pending_marker_idx ON plugin_market_reviews(pending_project_id)");
 
+  const pluginVersionColumns = database.prepare("PRAGMA table_info(plugin_versions)").all() as Array<{ name: string }>;
+  if (!pluginVersionColumns.some((column) => column.name === "config_page_html")) database.exec("ALTER TABLE plugin_versions ADD COLUMN config_page_html TEXT");
+
   const botColumns = database.prepare("PRAGMA table_info(bots)").all() as Array<{ name: string }>;
   if (!botColumns.some((column) => column.name === "auto_connect")) {
     database.exec("ALTER TABLE bots ADD COLUMN auto_connect INTEGER NOT NULL DEFAULT 0");
@@ -433,6 +437,7 @@ function migrateSqlite(database: Database.Database) {
   if (!botColumns.some((column) => column.name === "connection_mode")) {
     database.exec("ALTER TABLE bots ADD COLUMN connection_mode TEXT NOT NULL DEFAULT 'websocket' CHECK(connection_mode IN ('websocket', 'webhook'))");
   }
+  database.prepare("UPDATE bots SET intents = 1107300352 WHERE intents = 33554432").run();
 
   const deliveryColumns = database.prepare("PRAGMA table_info(plugin_deliveries)").all() as Array<{ name: string }>;
   if (!deliveryColumns.some((column) => column.name === "lease_owner")) database.exec("ALTER TABLE plugin_deliveries ADD COLUMN lease_owner TEXT");
@@ -603,6 +608,13 @@ function existingMySqlIndexedIdentifierLength(database: PlatformDatabase): MySql
 function migrateMySql(database: PlatformDatabase) {
   const indexedIdentifierLength = existingMySqlIndexedIdentifierLength(database);
   database.exec(mysqlSchemaForIndexedIdentifierLength(indexedIdentifierLength));
+  database.prepare("UPDATE bots SET intents = 1107300352 WHERE intents = 33554432").run();
+  const pluginConfigPageColumn = database.prepare(`
+    SELECT 1 AS found FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'config_page_html'
+    LIMIT 1
+  `).get();
+  if (!pluginConfigPageColumn) database.exec("ALTER TABLE plugin_versions ADD COLUMN config_page_html LONGTEXT NULL AFTER entry_code");
   const pendingReviewColumn = database.prepare(`
     SELECT EXTRA AS extra FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'plugin_market_reviews' AND column_name = 'pending_project_id'

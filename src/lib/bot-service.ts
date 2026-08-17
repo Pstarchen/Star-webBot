@@ -14,6 +14,7 @@ type BotRow = {
   client_secret_cipher: string;
   environment: "production" | "sandbox";
   connection_mode: BotConnectionMode;
+  intents: number;
   status: Bot["status"];
   gateway_session_id: string | null;
   gateway_sequence: number | null;
@@ -25,7 +26,13 @@ type BotRow = {
 
 type ClientCache = typeof globalThis & { __starbotClients?: Map<string, QQBotApiClient> };
 
-export const defaultQQGatewayIntents = 1 << 25;
+export const qqGatewayIntents = {
+  directMessage: 1 << 12,
+  groupAndC2C: 1 << 25,
+  publicGuildMessages: 1 << 30,
+} as const;
+
+export const defaultQQGatewayIntents = qqGatewayIntents.directMessage | qqGatewayIntents.groupAndC2C | qqGatewayIntents.publicGuildMessages;
 
 function clientCache() {
   const state = globalThis as ClientCache;
@@ -149,7 +156,7 @@ export function getBotGatewayConfig(botId: string) {
   if (row.connection_mode !== "websocket") throw new Error("GATEWAY_MODE_REQUIRED");
   return {
     botId: row.id,
-    intents: defaultQQGatewayIntents,
+    intents: row.intents || defaultQQGatewayIntents,
     sessionId: row.gateway_session_id,
     sequence: row.gateway_sequence,
     client: getBotClientInternal(botId),

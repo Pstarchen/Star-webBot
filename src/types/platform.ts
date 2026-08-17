@@ -132,13 +132,45 @@ export type Plugin = {
   pendingEvents: number;
 };
 
+export type HostedPluginJsonValue = string | number | boolean | null | HostedPluginJsonValue[] | { [key: string]: HostedPluginJsonValue };
+
+export type HostedPluginApiDefinition = {
+  id: string;
+  name: string;
+  method: "GET" | "POST";
+  url: string;
+  headers: Record<string, string>;
+  body?: HostedPluginJsonValue;
+};
+
+export type HostedPluginReplyMedia = {
+  type: "image" | "video" | "audio";
+  url: string;
+  caption?: string;
+};
+
+export type HostedPluginReplyRule = {
+  id: string;
+  name: string;
+  prefix: string;
+  match: "exact" | "fuzzy";
+  threshold?: number;
+  apis: string[];
+  reply: {
+    text?: string;
+    media: HostedPluginReplyMedia[];
+  };
+};
+
+export type HostedPluginConfigValue = string | number | boolean | HostedPluginApiDefinition[] | HostedPluginReplyRule[];
+
 export type HostedPluginConfigField = {
   key: string;
   label: string;
   description?: string;
-  type: "text" | "textarea" | "number" | "boolean" | "select";
+  type: "text" | "textarea" | "number" | "boolean" | "select" | "api-list" | "reply-list";
   required: boolean;
-  default?: string | number | boolean;
+  default?: HostedPluginConfigValue;
   placeholder?: string;
   min?: number;
   max?: number;
@@ -188,8 +220,9 @@ export type HostedPluginInstallation = {
   failureCount: number;
   lastError: string | null;
   lastRunAt: string | null;
-  config: Record<string, string | number | boolean>;
+  config: Record<string, HostedPluginConfigValue>;
   configSchema: HostedPluginConfigField[];
+  configPage: { height: number } | null;
   events: string[];
   permissions: string[];
   commands: HostedPluginCommand[];

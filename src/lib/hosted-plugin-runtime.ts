@@ -128,6 +128,8 @@ const bootstrapCode = `(() => {
         },
         sendC2C(userOpenid, payload) { return this.request("POST", "/v2/users/" + encodeURIComponent(String(userOpenid)) + "/messages", payload); },
         sendGroup(groupOpenid, payload) { return this.request("POST", "/v2/groups/" + encodeURIComponent(String(groupOpenid)) + "/messages", payload); },
+        sendChannel(channelId, payload) { return this.request("POST", "/channels/" + encodeURIComponent(String(channelId)) + "/messages", payload); },
+        sendDms(guildId, payload) { return this.request("POST", "/dms/" + encodeURIComponent(String(guildId)) + "/messages", payload); },
         getBotProfile() { return this.request("GET", "/users/@me"); },
         recallC2C(userOpenid, messageId) { return this.request("DELETE", "/v2/users/" + encodeURIComponent(String(userOpenid)) + "/messages/" + encodeURIComponent(String(messageId))); },
         recallGroup(groupOpenid, messageId) { return this.request("DELETE", "/v2/groups/" + encodeURIComponent(String(groupOpenid)) + "/messages/" + encodeURIComponent(String(messageId))); },
