@@ -138,6 +138,16 @@ const httpSnippet = `const response = await sdk.http.request(
 
 if (!response.ok) sdk.log.warn("external api failed", response.status);`;
 
+const mediaHttpSnippet = `const response = await sdk.http.request(
+  "https://cdn.example.com/video.mp4",
+  { responseMode: "media" }
+);
+
+if (response.ok) {
+  const mediaUrl = response.url;
+  sdk.log.info("media ready", { mediaUrl });
+}`;
+
 const configBridgeSnippet = `const state = await StarBotConfig.getState();
 
 await StarBotConfig.saveConfig({
@@ -341,7 +351,10 @@ export default function PluginDevelopmentPage() {
               <p>单聊与群聊先调用对应 <InlineCode>/files</InlineCode> 上传公网 URL，取得 <InlineCode>file_info</InlineCode>，再用 <InlineCode>msg_type: 7</InlineCode> 发送。频道图片可使用 <InlineCode>image</InlineCode> URL；QQ 当前没有公开频道 <InlineCode>/files</InlineCode>，频道视频和音频应退化为公网链接。</p>
               <h3 className="pt-2 text-sm font-semibold text-foreground">外部 HTTP</h3>
               <CodeBlock label="External HTTP request">{httpSnippet}</CodeBlock>
-              <p>外部请求最多跟随 3 次重定向，请求体最大 32KB、响应体最大 64KB。URL 内嵌凭据、localhost、内网/保留地址及危险请求头会被拒绝；跨域重定向会移除 authorization 与 cookie。</p>
+              <CodeBlock label="Media HTTP request">{mediaHttpSnippet}</CodeBlock>
+              <p><InlineCode>responseMode</InlineCode> 默认为 <InlineCode>json</InlineCode>。直接返回图片、视频或音频文件时使用 <InlineCode>media</InlineCode>，宿主只读取状态、响应头和最终 URL，不把二进制内容读进插件运行时。自定义回复可引用 <InlineCode>{`{{api.video.url}}`}</InlineCode>；如果接口返回 JSON 中的地址，则保持 <InlineCode>json</InlineCode>，按实际路径引用，例如 <InlineCode>{`{{api.video.data.url}}`}</InlineCode>。</p>
+              <p>媒体地址必须是 QQ 服务器可访问的公网 HTTP/HTTPS URL，不能使用 localhost、内网地址或需要登录 Cookie 的临时页面。外部请求最多跟随 3 次重定向，请求体最大 32KB、JSON 响应最大 64KB；URL 内嵌凭据、内网/保留地址及危险请求头会被拒绝，跨域重定向会移除 authorization 与 cookie。</p>
+              <p>出现“暂时无法获取内容，请稍后再试。”时，先确认响应类型与返回格式匹配，再检查 API 是否返回 2xx、模板路径是否正确，以及媒体 URL 是否能从公网直接访问；插件运行记录会保留具体失败码。</p>
             </DocSection>
 
             <DocSection id="permissions" eyebrow="07 / SECURITY" title="只申请代码实际使用的权限">
