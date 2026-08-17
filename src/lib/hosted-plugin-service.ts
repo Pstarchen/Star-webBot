@@ -1,11 +1,14 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { getBotClientInternal, getBotRow } from "@/lib/bot-service";
 import { getDatabase, writeAuditLog } from "@/lib/database";
 import {
   defaultPluginConfig,
   hostedPluginManifestSchema,
   parseHostedPluginPackage,
+  pluginApiDefinitionSchema,
   validatePluginConfig,
 } from "@/lib/hosted-plugin-package";
 import { executeHostedPlugin, validateHostedPluginCode, type HostedPluginAction } from "@/lib/hosted-plugin-runtime";
@@ -25,6 +28,23 @@ const AUTO_DISABLE_FAILURES = 5;
 const MAX_KV_ENTRIES = 100;
 const MAX_KV_VALUE_BYTES = 16 * 1024;
 const MAX_KV_TOTAL_BYTES = 128 * 1024;
+const MAX_PLUGIN_ASSET_BYTES = 20 * 1024 * 1024;
+const pluginAssetTypes = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "audio/mpeg": ".mp3",
+  "audio/wav": ".wav",
+  "audio/ogg": ".ogg",
+  "audio/mp4": ".m4a",
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "application/pdf": ".pdf",
+  "application/zip": ".zip",
+  "text/plain": ".txt",
+  "application/octet-stream": ".bin",
+} as const;
 
 type ProjectRow = {
   id: string;
@@ -461,9 +481,181 @@ export function deletePluginRecord(user: SessionUser, installationId: string, ke
   writeAuditLog(user.id, "hosted_plugin.record.delete", "plugin_installation", installationId, { key });
 }
 
+function pluginAssetRoot() {
+  const configured = process.env.PLUGIN_ASSET_DIRECTORY;
+  if (configured) return path.resolve(configured);
+  const databasePath = process.env.DATABASE_PATH;
+  return path.resolve(databasePath ? path.dirname(databasePath) : path.join(process.cwd(), "data"), "plugin-assets");
+}
+
+function pluginAssetDirectory(installationId: string) {
+  const directory = createHash("sha256").update(installationId).digest("hex");
+  return path.join(pluginAssetRoot(), directory);
+}
+
+function pluginAssetId(value: string) {
+  if (!/^[a-f0-9-]{36}\.(?:jpg|png|gif|webp|mp3|wav|ogg|m4a|mp4|webm|pdf|zip|txt|bin)$/.test(value)) throw new Error("PLUGIN_ASSET_ID_INVALID");
+  return value;
+}
+
+function assetMimeType(assetId: string) {
+  const extension = path.extname(assetId).toLowerCase();
+  return Object.entries(pluginAssetTypes).find((entry) => entry[1] === extension)?.[0] || "application/octet-stream";
+}
+
+function assertConfigPageAssets(user: SessionUser, installationId: string) {
+  const page = configPageVersion(user, installationId);
+  if (!page.manifest.permissions.includes("qq:api")) throw new Error("PLUGIN_CONFIG_PAGE_ASSETS_DENIED");
+}
+
+export function listPluginAssets(user: SessionUser, installationId: string) {
+  assertConfigPageAssets(user, installationId);
+  const directory = pluginAssetDirectory(installationId);
+  if (!fs.existsSync(/* turbopackIgnore: true */ directory)) return [];
+  return fs.readdirSync(/* turbopackIgnore: true */ directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /^[a-f0-9-]{36}\.[a-z0-9]+$/.test(entry.name))
+    .map((entry) => {
+      const stats = fs.statSync(/* turbopackIgnore: true */ path.join(directory, entry.name));
+      return { id: entry.name, mimeType: assetMimeType(entry.name), size: stats.size, createdAt: stats.birthtime.toISOString() };
+    })
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function createPluginAsset(user: SessionUser, installationId: string, input: { name: string; mimeType: string; base64: string }) {
+  assertConfigPageAssets(user, installationId);
+  const mimeType = input.mimeType.toLowerCase().split(";", 1)[0].trim() as keyof typeof pluginAssetTypes;
+  const extension = pluginAssetTypes[mimeType];
+  if (!extension) throw new Error("PLUGIN_ASSET_TYPE_INVALID");
+  if (!input.base64 || input.base64.length > Math.ceil(MAX_PLUGIN_ASSET_BYTES * 4 / 3) + 8) throw new Error("PLUGIN_ASSET_TOO_LARGE");
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.base64)) throw new Error("PLUGIN_ASSET_BASE64_INVALID");
+  const bytes = Buffer.from(input.base64, "base64");
+  if (!bytes.length || bytes.length > MAX_PLUGIN_ASSET_BYTES) throw new Error("PLUGIN_ASSET_TOO_LARGE");
+  const directory = pluginAssetDirectory(installationId);
+  fs.mkdirSync(/* turbopackIgnore: true */ directory, { recursive: true, mode: 0o750 });
+  const assetId = `${randomUUID()}${extension}`;
+  fs.writeFileSync(path.join(/* turbopackIgnore: true */ directory, assetId), bytes, { flag: "wx", mode: 0o640 });
+  writeAuditLog(user.id, "hosted_plugin.asset.create", "plugin_installation", installationId, { assetId, name: input.name.slice(0, 200), mimeType, size: bytes.length });
+  return { id: assetId, mimeType, size: bytes.length };
+}
+
+export function deletePluginAsset(user: SessionUser, installationId: string, assetId: string) {
+  assertConfigPageAssets(user, installationId);
+  const normalized = pluginAssetId(assetId);
+  fs.rmSync(/* turbopackIgnore: true */ path.join(pluginAssetDirectory(installationId), normalized), { force: true });
+  writeAuditLog(user.id, "hosted_plugin.asset.delete", "plugin_installation", installationId, { assetId: normalized });
+}
+
+export function readPluginAsset(installationId: string, assetId: string) {
+  const normalized = pluginAssetId(assetId);
+  const filePath = path.join(pluginAssetDirectory(installationId), normalized);
+  if (!fs.existsSync(/* turbopackIgnore: true */ filePath)) throw new Error("PLUGIN_ASSET_NOT_FOUND");
+  const stats = fs.statSync(/* turbopackIgnore: true */ filePath);
+  if (!stats.isFile() || stats.size > MAX_PLUGIN_ASSET_BYTES) throw new Error("PLUGIN_ASSET_NOT_FOUND");
+  return { bytes: fs.readFileSync(/* turbopackIgnore: true */ filePath), mimeType: assetMimeType(normalized), size: stats.size };
+}
+
+export function listPluginRuns(user: SessionUser, installationId: string, limit = 50) {
+  const page = configPageVersion(user, installationId);
+  if (!page.manifest.permissions.includes("log:write")) throw new Error("PLUGIN_CONFIG_PAGE_RUNS_DENIED");
+  const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const rows = getDatabase().prepare(`
+    SELECT id, event_type, event_key, status, duration_ms, action_count, logs_json, error, created_at
+    FROM plugin_runs WHERE installation_id = ? ORDER BY created_at DESC LIMIT ?
+  `).all(installationId, boundedLimit) as Array<{
+    id: string;
+    event_type: string;
+    event_key: string | null;
+    status: "success" | "skipped" | "failed";
+    duration_ms: number;
+    action_count: number;
+    logs_json: string;
+    error: string | null;
+    created_at: string;
+  }>;
+  return rows.map((row) => ({
+    id: row.id,
+    eventType: row.event_type,
+    eventKey: row.event_key,
+    status: row.status,
+    durationMs: row.duration_ms,
+    actionCount: row.action_count,
+    logs: parseJson<unknown[]>(row.logs_json, []),
+    error: row.error,
+    createdAt: row.created_at,
+  }));
+}
+
+function readTemplatePath(root: unknown, path: string) {
+  const denied = new Set(["__proto__", "prototype", "constructor"]);
+  const segments = path.replace(/\[([0-9]+)\]/g, ".$1").replace(/^\./, "").split(".").filter(Boolean);
+  let value = root;
+  for (const segment of segments) {
+    if (denied.has(segment) || value === null || value === undefined || (typeof value !== "object" && typeof value !== "string")) return undefined;
+    if (!Object.prototype.hasOwnProperty.call(Object(value), segment)) return undefined;
+    value = (value as Record<string, unknown>)[segment];
+  }
+  return value;
+}
+
+function renderApiTestValue(value: unknown, sample: Record<string, string | number | boolean>, depth = 0): unknown {
+  if (depth > 12) throw new Error("PLUGIN_API_TEST_TEMPLATE_DEPTH");
+  if (typeof value === "string") {
+    const resolve = (token: string) => {
+      const normalized = token.trim();
+      if (normalized.startsWith("encode.")) return encodeURIComponent(String(readTemplatePath(sample, normalized.slice(7)) ?? ""));
+      if (normalized.startsWith("json.")) return JSON.stringify(readTemplatePath(sample, normalized.slice(5)) ?? null);
+      return readTemplatePath(sample, normalized);
+    };
+    const exact = value.match(/^\{\{\s*([^{}]+?)\s*\}\}$/);
+    if (exact) return resolve(exact[1]) ?? "";
+    return value
+      .replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_match, token: string) => String(resolve(token) ?? ""))
+      .replace(/\{([A-Za-z][A-Za-z0-9_.-]*)\}/g, (_match, token: string) => String(readTemplatePath(sample, token) ?? ""));
+  }
+  if (Array.isArray(value)) return value.map((item) => renderApiTestValue(item, sample, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renderApiTestValue(item, sample, depth + 1)]));
+  }
+  return value;
+}
+
+export async function testPluginApi(
+  user: SessionUser,
+  installationId: string,
+  input: { definition: unknown; sample: Record<string, string | number | boolean> },
+  dependencies: { request?: typeof requestPluginHttp } = {},
+) {
+  const page = configPageVersion(user, installationId);
+  if (!page.manifest.permissions.includes("http:request")) throw new Error("PLUGIN_CONFIG_PAGE_API_TEST_DENIED");
+  const definition = pluginApiDefinitionSchema.parse(input.definition);
+  const renderedUrl = String(renderApiTestValue(definition.url, input.sample));
+  const controller = new AbortController();
+  const startedAt = performance.now();
+  const response = await (dependencies.request || requestPluginHttp)({
+    url: renderedUrl,
+    method: definition.method,
+    responseMode: definition.responseMode,
+    timeoutMs: definition.timeoutMs,
+    headers: renderApiTestValue(definition.headers, input.sample) as Record<string, string>,
+    ...(definition.body === undefined ? {} : { body: renderApiTestValue(definition.body, input.sample) }),
+  }, controller.signal);
+  const raw = definition.responseMode === "media" ? response.url : response.body;
+  const extracted = definition.responsePath ? readTemplatePath(raw, definition.responsePath) : raw;
+  return {
+    ok: response.ok,
+    status: response.status,
+    url: response.url,
+    headers: response.headers,
+    body: response.body,
+    extracted: extracted ?? null,
+    durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+  };
+}
+
 export function uninstallPlugin(user: SessionUser, installationId: string) {
   const installation = accessibleInstallation(user, installationId);
   getDatabase().prepare("DELETE FROM plugin_installations WHERE id = ?").run(installationId);
+  fs.rmSync(/* turbopackIgnore: true */ pluginAssetDirectory(installationId), { recursive: true, force: true });
   writeAuditLog(user.id, "hosted_plugin.uninstall", "plugin_installation", installationId, { projectId: installation.project_id, botId: installation.bot_id });
 }
 
@@ -701,6 +893,13 @@ export async function dispatchHostedPlugins(botId: string, eventType: string, ev
   for (const row of rows) {
     const manifest = parseManifest(row.manifest_json);
     if (!manifest.events.includes("*") && !manifest.events.includes(eventType)) continue;
+    const installationConfig = readInstallationConfig(row.id);
+    if (eventType === "STARBOT_SCHEDULE_TICK") {
+      const rawSchedules = installationConfig.schedules;
+      let schedules: unknown = rawSchedules;
+      if (typeof rawSchedules === "string") schedules = parseJson<unknown>(rawSchedules, []);
+      if (!Array.isArray(schedules) || !schedules.some((schedule) => schedule && typeof schedule === "object" && (schedule as { enabled?: unknown }).enabled !== false)) continue;
+    }
     executed += 1;
     let durationMs = 0;
     let actionCount = 0;
@@ -710,7 +909,7 @@ export async function dispatchHostedPlugins(botId: string, eventType: string, ev
       const result = await executeHostedPlugin({
         code: row.entry_code,
         event: { type: eventType, botId, data: eventData },
-        config: readInstallationConfig(row.id),
+        config: installationConfig,
         kv: readInstallationKv(row.id),
         qqRequest: permissions.has("qq:api")
           ? (method, path, body, signal) => getBotClientInternal(botId).request(validateQQApiPath(path), method, body, signal)

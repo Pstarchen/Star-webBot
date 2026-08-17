@@ -148,6 +148,7 @@ const bootstrapCode = `(() => {
               url: String(url),
               method: String(options.method || "GET").toUpperCase(),
               ...(options.responseMode === "media" ? { responseMode: "media" } : {}),
+              ...(options.timeoutMs !== undefined ? { timeoutMs: Number(options.timeoutMs) } : {}),
               headers: options.headers,
               body: options.body
             };

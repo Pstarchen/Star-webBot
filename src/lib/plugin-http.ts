@@ -15,6 +15,7 @@ export type PluginHttpRequest = {
   url: string;
   method?: PluginHttpMethod;
   responseMode?: "json" | "media";
+  timeoutMs?: number;
   headers?: Record<string, string>;
   body?: unknown;
 };
@@ -228,6 +229,9 @@ function responseHeaders(response: Response) {
 }
 
 export async function requestPluginHttp(request: PluginHttpRequest, signal: AbortSignal, dependencies: PluginHttpDependencies = {}): Promise<PluginHttpResponse> {
+  const timeoutMs = Number(request.timeoutMs ?? 10_000);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 25_000) throw new Error("PLUGIN_HTTP_TIMEOUT_INVALID");
+  const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
   const lookup = dependencies.lookup || (async (hostname: string) => lookupDns(hostname, { all: true, verbatim: true }));
   let url = parseUrl(String(request.url || ""));
   let method = String(request.method || "GET").toUpperCase() as PluginHttpMethod;
@@ -238,8 +242,8 @@ export async function requestPluginHttp(request: PluginHttpRequest, signal: Abor
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
     const addresses = await assertPublicUrl(url, lookup);
     const response = dependencies.fetch
-      ? await dependencies.fetch(url, { method, headers, body, redirect: "manual", signal })
-      : await requestPinned(url, method, headers, body, signal, addresses[0], request.responseMode);
+      ? await dependencies.fetch(url, { method, headers, body, redirect: "manual", signal: requestSignal })
+      : await requestPinned(url, method, headers, body, requestSignal, addresses[0], request.responseMode);
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       if (redirectCount === MAX_REDIRECTS) throw new Error("PLUGIN_HTTP_REDIRECT_LIMIT");
       const location = response.headers.get("location");

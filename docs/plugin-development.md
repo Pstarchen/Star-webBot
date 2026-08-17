@@ -149,10 +149,10 @@ node sdk/plugin/build.mjs examples/hosted-plugin dist/hello-starbot.zip
 | `reply:markdown` | `sdk.reply.markdown` |
 | `reply:ark` | `sdk.reply.ark` |
 | `reply:keyboard` | `sdk.reply.keyboard` |
-| `qq:api` | 所有 `sdk.qq.*` 调用 |
-| `http:request` | `sdk.http.request` |
+| `qq:api` | 所有 `sdk.qq.*` 调用和配置页 `assets.*` |
+| `http:request` | `sdk.http.request` 和配置页 `api.test` |
 | `storage:kv` | `sdk.kv.*` 和配置页 `records.*` |
-| `log:write` | `sdk.log.*` |
+| `log:write` | `sdk.log.*` 和配置页 `runs.list` |
 
 权限在产生副作用前检查。缺失时使用 `PLUGIN_PERMISSION_DENIED:<permission>` 作为错误码。
 
@@ -180,15 +180,30 @@ node sdk/plugin/build.mjs examples/hosted-plugin dist/hello-starbot.zip
 type ApiDefinition = {
   id: string;                       // ^[A-Za-z][A-Za-z0-9_-]{0,63}$
   name: string;                     // 1-80 字符
+  enabled?: boolean;                // 默认 true
   method: "GET" | "POST";
   responseMode?: "json" | "media"; // media 只保留最终 URL，不读取二进制响应体
+  responsePath?: string;            // JSON 路径，最长 300 字符，支持 list[0].url
+  responseType?: "auto" | "text" | "image" | "video" | "audio" | "file";
+  responseTemplate?: string;        // 最长 4,000 字符
+  errorMessage?: string;            // 最长 2,000 字符
+  emptyMessage?: string;            // 最长 2,000 字符
   url: string;                      // 1-2,000 字符
   headers: Record<string, string>;  // 最多 20 项
   body?: JsonValue;                 // 单个 body 最大 16 KB
+  cooldownSeconds?: number;         // 0-86,400，默认 0
+  cacheSeconds?: number;            // 0-86,400，默认 0
+  timeoutMs?: number;               // 1,000-25,000，默认 10,000
+  retryCount?: number;              // 0-2，默认 0
+  fallbackApiId?: string;
+  chainToApiId?: string;
+  rateLimitPerMinute?: number;      // 0-120，0 表示不单独限制
 };
 ```
 
-`responseMode` 默认为 `json`。当 API 直接返回图片、视频或音频时设为 `media`，回复媒体地址使用 `{{api.<id>.url}}`；如果 API 返回 JSON 中的媒体地址，则保持 `json`，使用 `{{api.<id>.<JSON路径>}}`，例如 `{{api.video.data.url}}`。媒体地址必须是 QQ 服务器可访问的公网 URL。
+`responseMode` 默认为 `json`。当 API 直接返回图片、视频或音频二进制时设为 `media`，宿主只验证响应并保留最终 URL，回复媒体地址使用 `{{api.<id>.url}}`。如果 API 返回 JSON 中的媒体地址，则保持 `json`，用 `responsePath: "data.url"` 提取，或使用 `{{api.<id>.<JSON路径>}}`，例如 `{{api.video.data.url}}`。媒体地址必须是 QQ 服务器无需 Cookie 即可访问的公网 URL。
+
+`fallbackApiId` 用于当前调用失败后的备用接口；`chainToApiId` 在当前调用成功后继续执行下一接口。两项未选择时应省略，不能传空字符串。宿主只校验结构，插件仍应在运行时检测不存在的 ID 和循环调用。
 
 ### 4.3 `reply-list`
 
@@ -198,22 +213,48 @@ type ApiDefinition = {
 type ReplyRule = {
   id: string;
   name: string;
+  group?: string;                   // 默认“默认分组”
+  enabled?: boolean;                // 默认 true
+  eventType?: string;               // 2-80 位大写事件名
   prefix: string;                   // 1-200 字符
-  match: "exact" | "fuzzy";
+  aliases?: string[];               // 最多 20 个别名
+  match: "exact" | "contains" | "regex" | "startsWith" | "endsWith" | "fuzzy";
   threshold?: number;               // 0.1-1
+  requireAt?: boolean;
+  weight?: number;                  // 1-100，默认 50
+  cooldownSeconds?: number;         // 0-86,400
+  failureReply?: string;            // 最长 2,000 字符
+  emptyReply?: string;              // 最长 2,000 字符
+  conditions?: {
+    scenes?: Array<"c2c" | "group" | "channel" | "dms">;
+    userIds?: string[];
+    userBlacklist?: string[];
+    groupIds?: string[];
+    groupBlacklist?: string[];
+    botIds?: string[];
+    roles?: Array<"owner" | "admin" | "member">;
+    messageTypes?: Array<"text" | "image" | "audio" | "video" | "file">;
+    timeStart?: string;             // HH:mm
+    timeEnd?: string;               // HH:mm
+  };
   apis: string[];                   // 最多 3 个 API id
   reply: {
     text?: string;                  // 最多 4,000 字符
+    variants?: string[];            // 最多 20 个随机文本
     media: Array<{
-      type: "image" | "video" | "audio";
+      type: "image" | "video" | "audio" | "file";
       url: string;                  // 最多 2,000 字符
       caption?: string;             // 最多 500 字符
-    }>;                             // 最多 3 项
+      name?: string;                // 最长 200 字符
+    }>;                             // 最多 5 项
+    format?: "text" | "markdown" | "ark";
+    mention?: "none" | "sender" | "all";
+    payload?: JsonValue;            // Markdown / Ark 结构化载荷
   };
 };
 ```
 
-每条回复必须至少包含非空文本或一个媒体项。结构化字段既可由宿主的标准编辑器呈现，也可由 `configPage` 实现更适合业务的表格、标签页和编辑弹窗。
+每条回复必须至少包含非空文本、一个非空随机候选或一个媒体项。用户/群名单各最多 100 项，机器人名单最多 20 项。结构化字段既可由宿主的标准编辑器呈现，也可由 `configPage` 实现更适合业务的表格、标签页和编辑弹窗。
 
 ## 5. 自定义配置页
 
@@ -252,7 +293,7 @@ type ReplyRule = {
 ```js
 async function start() {
   const state = await StarBotConfig.getState();
-  console.log(state.config, state.capabilities.records);
+  console.log(state.config, state.capabilities);
 }
 
 if (window.StarBotConfig) start();
@@ -267,7 +308,12 @@ const state = await StarBotConfig.getState();
 //   installation: { id, name, version, botId, botName },
 //   config: Record<string, JsonValue>,
 //   configSchema: ConfigField[],
-//   capabilities: { records: boolean }
+//   capabilities: {
+//     records: boolean, // storage:kv
+//     runs: boolean,   // log:write
+//     apiTest: boolean,// http:request
+//     assets: boolean  // qq:api
+//   }
 // }
 ```
 
@@ -301,9 +347,47 @@ await StarBotConfig.records.delete("stats.daily");
 
 记录 key 必须匹配 `^[A-Za-z0-9_.:-]{1,80}$`，值必须是 JSON 值。必须声明 `storage:kv`。每个安装实例最多 100 个 key，单值最大 16 KB，总量最大 128 KB。配置页记录与运行时 `sdk.kv` 是同一存储空间，更新同名 key 会互相覆盖。
 
+#### `runs.list(limit)`
+
+读取当前安装实例最近 1-100 条运行记录，需要 `log:write`：
+
+```js
+const { runs } = await StarBotConfig.runs.list(50);
+// [{ id, eventType, eventKey, status, durationMs, actionCount,
+//    logs, error, createdAt }]
+```
+
+#### `api.test(definition, sample)`
+
+由宿主代发测试请求，需要 `http:request`。它使用与插件运行时相同的 schema、SSRF、请求头、大小、重定向和超时限制；`sample` 是最多 40 项的扁平测试变量，每个值只能是字符串、有限数字或布尔值。
+
+```js
+const { result } = await StarBotConfig.api.test(apiDefinition, {
+  query: "北京",
+  message: "天气 北京",
+  qqid: "test-user"
+});
+// result: { ok, status, url, headers, body, extracted, durationMs }
+```
+
+测试会渲染 `{variable}`、`{{path}}`、`{{encode.path}}` 和 `{{json.path}}`。`extracted` 是应用 `responsePath` 后的值；`responseMode: "media"` 时提取根值为最终 URL。
+
+#### `assets.list/upload/delete`
+
+持久媒体需要 `qq:api`，按安装实例隔离：
+
+```js
+const base64 = arrayBufferToBase64(await file.arrayBuffer());
+const { asset } = await StarBotConfig.assets.upload(file.name, file.type, base64);
+const { assets } = await StarBotConfig.assets.list();
+await StarBotConfig.assets.delete(asset.id);
+```
+
+单文件最大 20 MB。允许 JPG/PNG/GIF/WebP、MP3/WAV/OGG/M4A、MP4/WebM、PDF、ZIP、TXT 和二进制文件。返回的 `asset.url` 是随机 ID 的公开只读地址，供 QQ 服务器拉取；不要上传密钥或私密文件。更新版本保留媒体，卸载安装实例会删除其媒体目录。在 Docker 中必须持久化宿主数据目录或 `PLUGIN_ASSET_DIRECTORY`。
+
 ### 5.3 宿主内部 HTTP 路由
 
-配置页应调用桥接，不应直接调用这些路由；下面的路由用于宿主前端或二次开发。它们都要求当前登录会话和安装实例所有权，PUT/PATCH/DELETE 还要求可信同源请求。
+配置页应调用桥接，不应直接调用这些路由；下面的路由用于宿主前端或二次开发。除公开媒体读取外，它们都要求当前登录会话和安装实例所有权；POST、PUT、PATCH、DELETE 还要求可信同源请求。
 
 | 方法与路径 | 请求 / 响应 |
 | --- | --- |
@@ -312,6 +396,12 @@ await StarBotConfig.records.delete("stats.daily");
 | `GET /api/plugin-installations/:id/records` | `{ records: Array<{ key, value, updatedAt }> }` |
 | `PUT /api/plugin-installations/:id/records` | `{ key, value } -> { ok: true }` |
 | `DELETE /api/plugin-installations/:id/records` | `{ key } -> { ok: true }` |
+| `GET /api/plugin-installations/:id/runs?limit=50` | `{ runs: PluginRun[] }`，limit 为 1-100 |
+| `POST /api/plugin-installations/:id/api-test` | `{ definition, sample } -> { result: ApiTestResult }` |
+| `GET /api/plugin-installations/:id/assets` | `{ assets: PluginAsset[] }` |
+| `POST /api/plugin-installations/:id/assets` | `{ name, mimeType, base64 } -> { asset }` |
+| `DELETE /api/plugin-installations/:id/assets` | `{ id } -> { ok: true }` |
+| `GET /api/plugin-assets/:installationId/:assetId` | 公开只读媒体响应，随机 ID、长期缓存、`nosniff` |
 
 ## 6. 入口脚本与事件对象
 
@@ -391,7 +481,21 @@ type StarBotEvent<T = Record<string, unknown>> = {
 
 插件不能自行修改 Intent。扩展默认 Intent 前，宿主管理员需要确认 QQ 机器人具备对应特殊事件权限；无权订阅的 Intent 会导致 Gateway 鉴权失败或不下发事件。
 
-## SDK 能力
+### 7.3 宿主定时事件
+
+`STARBOT_SCHEDULE_TICK` 是宿主合成事件，不是 QQ 官方 Dispatch：
+
+```ts
+{
+  type: "STARBOT_SCHEDULE_TICK",
+  botId: string,
+  data: { timestamp: number; minute: string }
+}
+```
+
+只有当前持有机器人 Gateway 租约的宿主实例会派发，频率为每分钟一次。插件必须在 `events` 中声明 `"STARBOT_SCHEDULE_TICK"` 或 `"*"`；宿主还会检查安装配置中的 `schedules` 字段，仅当它是包含至少一个启用任务的数组或 JSON 数组字符串时才执行插件，避免无计划插件每分钟产生运行记录。机器人离线或租约未持有时不会补发错过的分钟。
+
+## 8. SDK 能力
 
 ### 8.1 `sdk.config`
 
@@ -507,6 +611,8 @@ await sdk.qq.sendGroup(groupOpenid, {
 ```js
 const response = await sdk.http.request("https://api.example.com/search", {
   method: "POST",
+  responseMode: "json",
+  timeoutMs: 15000,
   headers: { "x-client": "starbot-plugin" },
   body: { keyword: "北京" }
 });
@@ -515,6 +621,19 @@ if (!response.ok) {
   sdk.log.warn("external api failed", response.status);
 }
 ```
+
+直接返回媒体文件的接口使用：
+
+```js
+const response = await sdk.http.request("https://cdn.example.com/video.mp4", {
+  responseMode: "media",
+  timeoutMs: 20000
+});
+
+if (response.ok) sdk.log.info("media URL ready", response.url);
+```
+
+`responseMode` 默认为 `json`，`timeoutMs` 必须是 `1000-25000` 的整数，默认 10 秒。`media` 模式不会把响应二进制读入 QuickJS，`body` 为空字符串，使用经过重定向校验后的 `url`。
 
 返回：
 
@@ -538,6 +657,7 @@ if (!response.ok) {
 - 请求体最大 32 KB，响应体最大 64 KB。
 - 最多 3 次重定向；每个新目标都重新做 DNS/地址校验。
 - 跨源重定向删除 `authorization` 和 `cookie`。
+- 自定义超时与本次插件运行的 30 秒墙钟上限同时生效，先到者中止请求。
 
 ### 8.6 `sdk.kv`
 
@@ -602,8 +722,16 @@ QQ 或 HTTP Promise 必须 `await`，或显式使用 `.then/.catch/.finally`。�
 | `QQ_API_PATH_INVALID` | QQ 相对路径不安全 |
 | `QQ_API_ENDPOINT_UNKNOWN` | `callEndpoint` ID 不存在 |
 | `PLUGIN_HTTP_PRIVATE_ADDRESS_DENIED` | 外部 URL 指向本机、内网或保留地址 |
+| `PLUGIN_HTTP_TIMEOUT_INVALID` | `timeoutMs` 不是 1,000-25,000 的整数 |
 | `PLUGIN_HTTP_REQUEST_TOO_LARGE` | 外部请求体超过 32 KB |
 | `PLUGIN_HTTP_RESPONSE_TOO_LARGE` | 外部响应超过 64 KB |
+| `PLUGIN_CONFIG_PAGE_RECORDS_DENIED` | 配置页使用记录但未声明 `storage:kv` |
+| `PLUGIN_CONFIG_PAGE_RUNS_DENIED` | 配置页读取运行记录但未声明 `log:write` |
+| `PLUGIN_CONFIG_PAGE_API_TEST_DENIED` | 配置页测试 API 但未声明 `http:request` |
+| `PLUGIN_CONFIG_PAGE_ASSETS_DENIED` | 配置页管理媒体但未声明 `qq:api` |
+| `PLUGIN_ASSET_TYPE_INVALID` | 上传 MIME 不在允许列表 |
+| `PLUGIN_ASSET_TOO_LARGE` | 持久媒体为空或超过 20 MB |
+| `PLUGIN_ASSET_ID_INVALID/NOT_FOUND` | 媒体 ID 非法或文件不存在 |
 | `PLUGIN_KV_ENTRY_LIMIT` | 已达到 100 个记录 |
 | `PLUGIN_KV_VALUE_TOO_LARGE` | 单记录超过 16 KB |
 | `PLUGIN_KV_TOTAL_LIMIT` | 记录总量超过 128 KB |

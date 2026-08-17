@@ -137,29 +137,68 @@ export type HostedPluginJsonValue = string | number | boolean | null | HostedPlu
 export type HostedPluginApiDefinition = {
   id: string;
   name: string;
+  enabled: boolean;
   method: "GET" | "POST";
   responseMode: "json" | "media";
+  responsePath?: string;
+  responseType: "auto" | "text" | "image" | "video" | "audio" | "file";
+  responseTemplate?: string;
+  errorMessage?: string;
+  emptyMessage?: string;
   url: string;
   headers: Record<string, string>;
   body?: HostedPluginJsonValue;
+  cooldownSeconds: number;
+  cacheSeconds: number;
+  timeoutMs: number;
+  retryCount: number;
+  fallbackApiId?: string;
+  chainToApiId?: string;
+  rateLimitPerMinute: number;
 };
 
 export type HostedPluginReplyMedia = {
-  type: "image" | "video" | "audio";
+  type: "image" | "video" | "audio" | "file";
   url: string;
   caption?: string;
+  name?: string;
 };
 
 export type HostedPluginReplyRule = {
   id: string;
   name: string;
+  group: string;
+  enabled: boolean;
+  eventType?: string;
   prefix: string;
-  match: "exact" | "fuzzy";
+  aliases: string[];
+  match: "exact" | "contains" | "regex" | "startsWith" | "endsWith" | "fuzzy";
   threshold?: number;
+  requireAt: boolean;
+  weight: number;
+  cooldownSeconds: number;
+  failureReply?: string;
+  emptyReply?: string;
+  conditions: {
+    scenes: Array<"c2c" | "group" | "channel" | "dms">;
+    userIds: string[];
+    userBlacklist: string[];
+    groupIds: string[];
+    groupBlacklist: string[];
+    botIds: string[];
+    roles: Array<"owner" | "admin" | "member">;
+    messageTypes: Array<"text" | "image" | "audio" | "video" | "file">;
+    timeStart?: string;
+    timeEnd?: string;
+  };
   apis: string[];
   reply: {
     text?: string;
+    variants: string[];
     media: HostedPluginReplyMedia[];
+    format: "text" | "markdown" | "ark";
+    mention: "none" | "sender" | "all";
+    payload?: HostedPluginJsonValue;
   };
 };
 

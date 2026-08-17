@@ -63,4 +63,13 @@ describe("hosted plugin HTTP", () => {
       headers: {},
     });
   });
+
+  it("validates per-request timeouts before network access", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ok: true })) as typeof fetch;
+    await expect(requestPluginHttp({ url: "https://api.example.com", timeoutMs: 999 }, new AbortController().signal, {
+      fetch: fetchMock,
+      lookup: publicLookup,
+    })).rejects.toThrow("PLUGIN_HTTP_TIMEOUT_INVALID");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

@@ -46,6 +46,9 @@ export function PluginConfigPage({ installation, config, onConfigSaved, onError 
 
   useEffect(() => {
     const recordsUrl = `/api/plugin-installations/${installation.id}/records`;
+    const runsUrl = `/api/plugin-installations/${installation.id}/runs`;
+    const apiTestUrl = `/api/plugin-installations/${installation.id}/api-test`;
+    const assetsUrl = `/api/plugin-installations/${installation.id}/assets`;
 
     async function handleRequest(request: BridgeRequest) {
       const current = bridgeState.current;
@@ -60,7 +63,12 @@ export function PluginConfigPage({ installation, config, onConfigSaved, onError 
           },
           config: current.config,
           configSchema: current.installation.configSchema,
-          capabilities: { records: current.installation.permissions.includes("storage:kv") },
+          capabilities: {
+            records: current.installation.permissions.includes("storage:kv"),
+            runs: current.installation.permissions.includes("log:write"),
+            apiTest: current.installation.permissions.includes("http:request"),
+            assets: current.installation.permissions.includes("qq:api"),
+          },
         };
       }
       if (request.method === "config.save") {
@@ -95,6 +103,39 @@ export function PluginConfigPage({ installation, config, onConfigSaved, onError 
           body: JSON.stringify({ key: params.key }),
         });
         return { ok: true };
+      }
+      if (request.method === "runs.list") {
+        const params = isRecord(request.params) ? request.params : {};
+        const limit = Number(params.limit ?? 50);
+        return responseJson(`${runsUrl}?limit=${encodeURIComponent(String(Number.isFinite(limit) ? limit : 50))}`);
+      }
+      if (request.method === "api.test") {
+        const params = isRecord(request.params) ? request.params : {};
+        if (!isRecord(params.definition) || !isRecord(params.sample)) throw new Error("API 测试参数不合法");
+        return responseJson(apiTestUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ definition: params.definition, sample: params.sample }),
+        });
+      }
+      if (request.method === "assets.list") return responseJson(assetsUrl);
+      if (request.method === "assets.upload") {
+        const params = isRecord(request.params) ? request.params : {};
+        if (typeof params.name !== "string" || typeof params.mimeType !== "string" || typeof params.base64 !== "string") throw new Error("媒体上传参数不合法");
+        return responseJson(assetsUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: params.name, mimeType: params.mimeType, base64: params.base64 }),
+        });
+      }
+      if (request.method === "assets.delete") {
+        const params = isRecord(request.params) ? request.params : {};
+        if (typeof params.id !== "string") throw new Error("媒体删除参数不合法");
+        return responseJson(assetsUrl, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: params.id }),
+        });
       }
       throw new Error("不支持的配置页操作");
     }

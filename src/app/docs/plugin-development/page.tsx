@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
   title: "插件开发文档",
-  description: "StarBot 托管插件的清单、事件、SDK、权限、构建与发布指南。",
+  description: "StarBot 托管插件的清单、配置页面、事件、SDK、权限、构建与发布指南。",
 };
 
 const sections = [
@@ -64,10 +64,10 @@ const permissions = [
   ["reply:markdown", "回复 Markdown 消息"],
   ["reply:ark", "回复 Ark 消息"],
   ["reply:keyboard", "回复键盘消息"],
-  ["qq:api", "调用受控 QQ OpenAPI"],
-  ["http:request", "访问经过 SSRF 防护的公开 HTTP 服务"],
-  ["storage:kv", "读写安装实例隔离的 KV"],
-  ["log:write", "写入插件运行日志"],
+  ["qq:api", "调用受控 QQ OpenAPI；配置页可管理持久媒体"],
+  ["http:request", "访问经过 SSRF 防护的公开 HTTP 服务；配置页可在线测试 API"],
+  ["storage:kv", "读写安装实例隔离的 KV；配置页可管理 records"],
+  ["log:write", "写入插件运行日志；配置页可读取 runs"],
 ] as const;
 
 const runtimeLimits = [
@@ -131,6 +131,8 @@ const httpSnippet = `const response = await sdk.http.request(
   "https://example.com/api/status",
   {
     method: "POST",
+    responseMode: "json",
+    timeoutMs: 15000,
     headers: { "x-client": "starbot-plugin" },
     body: { eventType: event.type }
   }
@@ -140,7 +142,7 @@ if (!response.ok) sdk.log.warn("external api failed", response.status);`;
 
 const mediaHttpSnippet = `const response = await sdk.http.request(
   "https://cdn.example.com/video.mp4",
-  { responseMode: "media" }
+  { responseMode: "media", timeoutMs: 20000 }
 );
 
 if (response.ok) {
@@ -157,7 +159,12 @@ await StarBotConfig.saveConfig({
 
 const { records } = await StarBotConfig.records.list();
 await StarBotConfig.records.set("stats.daily", { count: 12 });
-await StarBotConfig.records.delete("stats.daily");`;
+await StarBotConfig.records.delete("stats.daily");
+
+const { runs } = await StarBotConfig.runs.list(50);
+const { result } = await StarBotConfig.api.test(apiDefinition, { query: "北京" });
+const { asset } = await StarBotConfig.assets.upload(file.name, file.type, base64);
+await StarBotConfig.assets.delete(asset.id);`;
 
 const qqConvenienceSnippet = `await sdk.qq.sendC2C(userOpenid, payload);
 await sdk.qq.sendGroup(groupOpenid, payload);
@@ -304,14 +311,29 @@ export default function PluginDevelopmentPage() {
                 </table>
               </div>
               <p>配置字段支持 <InlineCode>text</InlineCode>、<InlineCode>textarea</InlineCode>、<InlineCode>number</InlineCode>、<InlineCode>boolean</InlineCode>、<InlineCode>select</InlineCode>、<InlineCode>api-list</InlineCode> 与 <InlineCode>reply-list</InlineCode>。配置按安装实例保存，同一插件在不同机器人上可以使用不同值。</p>
+              <p><InlineCode>api-list</InlineCode> 最多 50 项，可声明启用状态、GET/POST、JSON 或媒体响应、返回路径与类型、模板、空值/错误话术、缓存、冷却、1-25 秒超时、最多 2 次重试、备用和链式 API。未选择备用或链式 API 时必须省略字段，不能保存空字符串。</p>
+              <p><InlineCode>reply-list</InlineCode> 最多 100 项，支持完全、包含、正则、开头、结尾和模糊匹配；可组合事件、@、场景、用户/群/机器人、角色、消息类型和时间条件，并发送文本、Markdown、Ark、图片、视频、音频或文件。</p>
             </DocSection>
 
             <DocSection id="config" eyebrow="04 / CONFIG" title="插件可以提供完整的业务配置页面">
               <p>声明 <InlineCode>configPage</InlineCode> 后，宿主会把 HTML 放入仅允许脚本的沙箱 iframe。页面不能直接联网、读取 Cookie 或父页面 DOM，只能使用 <InlineCode>window.StarBotConfig</InlineCode> 桥接。</p>
               <CodeBlock label="config.html / bridge">{configBridgeSnippet}</CodeBlock>
-              <p><InlineCode>getState</InlineCode> 返回安装信息、当前配置、schema 和 records 能力；<InlineCode>saveConfig</InlineCode> 会再次执行服务端 schema 校验。记录接口需要 <InlineCode>storage:kv</InlineCode>，与运行时 KV 共用每安装 100 个 key、单值 16KB、总量 128KB 的配额。</p>
+              <p><InlineCode>getState</InlineCode> 返回安装信息、当前配置、schema，以及 <InlineCode>records</InlineCode>、<InlineCode>runs</InlineCode>、<InlineCode>apiTest</InlineCode>、<InlineCode>assets</InlineCode> 四项能力标记；<InlineCode>saveConfig</InlineCode> 保存完整配置并再次执行服务端 schema 校验。</p>
+              <div className="overflow-x-auto rounded-md border">
+                <table className="w-full min-w-[660px] text-left text-xs">
+                  <thead className="bg-muted/60 text-foreground"><tr><th className="px-4 py-3 font-semibold">桥接接口</th><th className="px-4 py-3 font-semibold">权限</th><th className="px-4 py-3 font-semibold">用途与限制</th></tr></thead>
+                  <tbody className="divide-y">
+                    {[
+                      ["records.list/set/delete", "storage:kv", "与运行时 KV 共用每安装 100 key、单值 16KB、总量 128KB"],
+                      ["runs.list(limit)", "log:write", "读取最近 1-100 条状态、耗时、动作、日志和错误"],
+                      ["api.test(definition, sample)", "http:request", "复用运行时 schema、SSRF、请求头、大小、重定向和超时限制"],
+                      ["assets.list/upload/delete", "qq:api", "安装隔离的公开只读媒体 URL；单文件 20MB，卸载时清理"],
+                    ].map(([method, permission, detail]) => <tr key={method}><td className="mono-data px-4 py-3 text-foreground">{method}</td><td className="mono-data px-4 py-3">{permission}</td><td className="px-4 py-3">{detail}</td></tr>)}
+                  </tbody>
+                </table>
+              </div>
               <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-900">
-                配置页适合表格、标签页、编辑弹窗、预览和业务记录。它扩展的是呈现与交互，不会绕过清单权限、配置 schema 或安装实例所有权。
+                配置页适合表格、标签页、编辑弹窗、预览、日志、统计和媒体库。它扩展的是呈现与交互，不会绕过清单权限、配置 schema、同源校验或安装实例所有权。
               </div>
             </DocSection>
 
@@ -325,6 +347,7 @@ export default function PluginDevelopmentPage() {
                 </table>
               </div>
               <p>宿主默认 Intent 是 <InlineCode>(1 &lt;&lt; 12) | (1 &lt;&lt; 25) | (1 &lt;&lt; 30)</InlineCode>，数值 <InlineCode>1107300352</InlineCode>。清单 events 只做过滤，不会替机器人开通私域、互动、论坛等 QQ 特殊权限。非消息事件不能自动推断回复目标，应显式调用 <InlineCode>sdk.qq.send*</InlineCode>。</p>
+              <p><InlineCode>STARBOT_SCHEDULE_TICK</InlineCode> 是宿主每分钟合成的定时事件，载荷为 <InlineCode>{`{ timestamp, minute }`}</InlineCode>。只有 Gateway 租约持有者会派发，且宿主仅执行配置中至少存在一个启用计划的安装实例；插件需显式订阅该事件或使用 <InlineCode>*</InlineCode>。</p>
               <p><InlineCode>onEvent</InlineCode> 支持同步或异步函数。运行时不提供 Node.js 模块、文件系统、环境变量、定时器、原生 fetch 或套接字；网络访问必须通过受控 SDK。</p>
             </DocSection>
 
@@ -352,7 +375,7 @@ export default function PluginDevelopmentPage() {
               <h3 className="pt-2 text-sm font-semibold text-foreground">外部 HTTP</h3>
               <CodeBlock label="External HTTP request">{httpSnippet}</CodeBlock>
               <CodeBlock label="Media HTTP request">{mediaHttpSnippet}</CodeBlock>
-              <p><InlineCode>responseMode</InlineCode> 默认为 <InlineCode>json</InlineCode>。直接返回图片、视频或音频文件时使用 <InlineCode>media</InlineCode>，宿主只读取状态、响应头和最终 URL，不把二进制内容读进插件运行时。自定义回复可引用 <InlineCode>{`{{api.video.url}}`}</InlineCode>；如果接口返回 JSON 中的地址，则保持 <InlineCode>json</InlineCode>，按实际路径引用，例如 <InlineCode>{`{{api.video.data.url}}`}</InlineCode>。</p>
+              <p><InlineCode>responseMode</InlineCode> 默认为 <InlineCode>json</InlineCode>；<InlineCode>timeoutMs</InlineCode> 必须是 1000-25000 的整数，默认 10 秒，并与单次运行 30 秒墙钟上限同时生效。直接返回图片、视频或音频文件时使用 <InlineCode>media</InlineCode>，宿主只读取状态、响应头和最终 URL，不把二进制内容读进插件运行时。自定义回复可引用 <InlineCode>{`{{api.video.url}}`}</InlineCode>；如果接口返回 JSON 中的地址，则保持 <InlineCode>json</InlineCode>，按实际路径引用，例如 <InlineCode>{`{{api.video.data.url}}`}</InlineCode>。</p>
               <p>媒体地址必须是 QQ 服务器可访问的公网 HTTP/HTTPS URL，不能使用 localhost、内网地址或需要登录 Cookie 的临时页面。外部请求最多跟随 3 次重定向，请求体最大 32KB、JSON 响应最大 64KB；URL 内嵌凭据、内网/保留地址及危险请求头会被拒绝，跨域重定向会移除 authorization 与 cookie。</p>
               <p>出现“暂时无法获取内容，请稍后再试。”时，先确认响应类型与返回格式匹配，再检查 API 是否返回 2xx、模板路径是否正确，以及媒体 URL 是否能从公网直接访问；插件运行记录会保留具体失败码。</p>
             </DocSection>
@@ -394,6 +417,8 @@ export default function PluginDevelopmentPage() {
                 {[
                   "确认安装实例已启用、机器人在线，事件类型包含在清单 events 中。",
                   "PLUGIN_PERMISSION_DENIED:* 表示清单缺少实际调用所需权限。",
+                  "PLUGIN_CONFIG_TYPE:apiDefinitions 通常来自多余字段、空的备用/链式 API ID，或数字超出 schema 范围。",
+                  "配置页能力报 403 时，对照 records/storage:kv、runs/log:write、api.test/http:request、assets/qq:api。",
                   "QQ 请求失败时记录 HTTP 状态和 Trace ID，再对照官方错误码；不要依赖 message 文案判断。",
                   "HTTP 429 表示触发限频，应降低调用频率；不要在一次处理器内无界重试。",
                   "实例自动停用后，先修复代码或配置、发布新版本，再手动启用。",

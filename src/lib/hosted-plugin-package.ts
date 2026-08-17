@@ -16,14 +16,27 @@ const pluginApiIdSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 export const pluginApiDefinitionSchema = z.object({
   id: pluginApiIdSchema,
   name: z.string().trim().min(1).max(80),
+  enabled: z.boolean().default(true),
   method: z.enum(["GET", "POST"]),
   responseMode: z.enum(["json", "media"]).default("json"),
+  responsePath: z.string().trim().max(300).optional(),
+  responseType: z.enum(["auto", "text", "image", "video", "audio", "file"]).default("auto"),
+  responseTemplate: z.string().max(4_000).optional(),
+  errorMessage: z.string().max(2_000).optional(),
+  emptyMessage: z.string().max(2_000).optional(),
   url: z.string().trim().min(1).max(2_000),
   headers: z.record(
     z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/),
     z.string().max(2_000),
   ).default({}),
   body: z.json().optional(),
+  cooldownSeconds: z.number().int().min(0).max(86_400).default(0),
+  cacheSeconds: z.number().int().min(0).max(86_400).default(0),
+  timeoutMs: z.number().int().min(1_000).max(25_000).default(10_000),
+  retryCount: z.number().int().min(0).max(2).default(0),
+  fallbackApiId: pluginApiIdSchema.optional(),
+  chainToApiId: pluginApiIdSchema.optional(),
+  rateLimitPerMinute: z.number().int().min(0).max(120).default(0),
 }).strict().superRefine((definition, context) => {
   if (Object.keys(definition.headers).length > 20) {
     context.addIssue({ code: "custom", message: "请求头不能超过 20 项", path: ["headers"] });
@@ -34,22 +47,57 @@ export const pluginApiDefinitionSchema = z.object({
 });
 
 export const pluginReplyMediaSchema = z.object({
-  type: z.enum(["image", "video", "audio"]),
+  type: z.enum(["image", "video", "audio", "file"]),
   url: z.string().trim().min(1).max(2_000),
   caption: z.string().trim().max(500).optional(),
+  name: z.string().trim().max(200).optional(),
 }).strict();
 
 export const pluginReplyRuleSchema = z.object({
   id: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),
   name: z.string().trim().min(1).max(80),
+  group: z.string().trim().min(1).max(80).default("默认分组"),
+  enabled: z.boolean().default(true),
+  eventType: z.string().regex(/^[A-Z0-9_]{2,80}$/).optional(),
   prefix: z.string().trim().min(1).max(200),
-  match: z.enum(["exact", "fuzzy"]),
+  aliases: z.array(z.string().trim().min(1).max(200)).max(20).default([]),
+  match: z.enum(["exact", "contains", "regex", "startsWith", "endsWith", "fuzzy"]),
   threshold: z.number().min(0.1).max(1).optional(),
+  requireAt: z.boolean().default(false),
+  weight: z.number().int().min(1).max(100).default(50),
+  cooldownSeconds: z.number().int().min(0).max(86_400).default(0),
+  failureReply: z.string().max(2_000).optional(),
+  emptyReply: z.string().max(2_000).optional(),
+  conditions: z.object({
+    scenes: z.array(z.enum(["c2c", "group", "channel", "dms"])).max(4).default([]),
+    userIds: z.array(z.string().trim().min(1).max(128)).max(100).default([]),
+    userBlacklist: z.array(z.string().trim().min(1).max(128)).max(100).default([]),
+    groupIds: z.array(z.string().trim().min(1).max(128)).max(100).default([]),
+    groupBlacklist: z.array(z.string().trim().min(1).max(128)).max(100).default([]),
+    botIds: z.array(z.string().trim().min(1).max(128)).max(20).default([]),
+    roles: z.array(z.enum(["owner", "admin", "member"])).max(3).default([]),
+    messageTypes: z.array(z.enum(["text", "image", "audio", "video", "file"])).max(5).default([]),
+    timeStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    timeEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  }).strict().default({
+    scenes: [],
+    userIds: [],
+    userBlacklist: [],
+    groupIds: [],
+    groupBlacklist: [],
+    botIds: [],
+    roles: [],
+    messageTypes: [],
+  }),
   apis: z.array(pluginApiIdSchema).max(3).default([]),
   reply: z.object({
     text: z.string().max(4_000).optional(),
-    media: z.array(pluginReplyMediaSchema).max(3).default([]),
-  }).strict().refine((reply) => Boolean(reply.text?.trim() || reply.media.length), "回复必须包含文本或媒体"),
+    variants: z.array(z.string().max(4_000)).max(20).default([]),
+    media: z.array(pluginReplyMediaSchema).max(5).default([]),
+    format: z.enum(["text", "markdown", "ark"]).default("text"),
+    mention: z.enum(["none", "sender", "all"]).default("none"),
+    payload: z.json().optional(),
+  }).strict().refine((reply) => Boolean(reply.text?.trim() || reply.variants.some((item) => item.trim()) || reply.media.length), "回复必须包含文本或媒体"),
 }).strict();
 
 const pluginApiListSchema = z.array(pluginApiDefinitionSchema).max(50);

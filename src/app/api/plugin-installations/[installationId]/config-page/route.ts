@@ -7,13 +7,13 @@ const bridgeBootstrap = String.raw`<script>
   const channel = "starbot.config.v1";
   const pending = new Map();
   let sequence = 0;
-  function call(method, params) {
+  function call(method, params, timeoutMs = 15000) {
     const id = "request-" + Date.now() + "-" + (++sequence);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error("宿主响应超时"));
-      }, 15000);
+      }, timeoutMs);
       pending.set(id, { resolve, reject, timer });
       parent.postMessage({ channel, direction: "request", id, method, params }, "*");
     });
@@ -34,11 +34,25 @@ const bridgeBootstrap = String.raw`<script>
     set: (key, value) => call("records.set", { key, value }),
     delete: (key) => call("records.delete", { key }),
   });
+  const api = Object.freeze({
+    test: (definition, sample = {}) => call("api.test", { definition, sample }),
+  });
+  const runs = Object.freeze({
+    list: (limit = 50) => call("runs.list", { limit }),
+  });
+  const assets = Object.freeze({
+    list: () => call("assets.list"),
+    upload: (name, mimeType, base64) => call("assets.upload", { name, mimeType, base64 }, 60000),
+    delete: (id) => call("assets.delete", { id }),
+  });
   Object.defineProperty(window, "StarBotConfig", {
     value: Object.freeze({
       getState: () => call("state.get"),
       saveConfig: (config) => call("config.save", { config }),
       records,
+      api,
+      runs,
+      assets,
     }),
     writable: false,
     configurable: false,

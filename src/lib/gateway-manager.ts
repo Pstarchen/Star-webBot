@@ -2,6 +2,7 @@ import "server-only";
 import WebSocket, { type RawData } from "ws";
 import { getBotGatewayConfig, listAutoConnectBotIds, recordEvent, setBotAutoConnect } from "@/lib/bot-service";
 import { ingestQQEvent, type QQEventEnvelope } from "@/lib/event-ingestion";
+import { dispatchHostedPlugins } from "@/lib/hosted-plugin-service";
 import {
   acquireGatewayLease,
   clearGatewayShardSession,
@@ -34,6 +35,8 @@ type BotGatewayRuntime = {
   gatewayUrl: string;
   shards: Map<number, ShardRuntime>;
   leaseTimer?: NodeJS.Timeout;
+  scheduleTimer?: NodeJS.Timeout;
+  lastScheduleMinute?: string;
   stopped: boolean;
   maxConcurrency: number;
   identifyTimestamps: number[];
@@ -139,6 +142,8 @@ export class GatewayManager {
         if (!renewGatewayLease(botId)) this.stopForLostLease(runtime);
       }, Math.floor(gatewayLeaseTtlMs / 3));
       runtime.leaseTimer.unref?.();
+      runtime.scheduleTimer = setInterval(() => this.dispatchScheduleTick(runtime), 15_000);
+      runtime.scheduleTimer.unref?.();
       void this.startShardBatches(runtime).catch((error) => {
         if (runtime.stopped) return;
         recordEvent(botId, { type: "WS_SHARD_START_FAILED", scene: "系统", status: "failed", content: error instanceof Error ? error.message : "unknown error", payload: {} });
@@ -176,6 +181,7 @@ export class GatewayManager {
     if (!runtime) return;
     runtime.stopped = true;
     if (runtime.leaseTimer) clearInterval(runtime.leaseTimer);
+    if (runtime.scheduleTimer) clearInterval(runtime.scheduleTimer);
     for (const shard of runtime.shards.values()) {
       shard.stopped = true;
       if (shard.heartbeat) clearInterval(shard.heartbeat);
@@ -191,6 +197,25 @@ export class GatewayManager {
     this.stopLocal(runtime.botId, true);
     markGatewayShardsOffline(runtime.botId);
     if (listAutoConnectBotIds().includes(runtime.botId)) scheduleLeaseAcquisition(runtime.botId);
+  }
+
+  private dispatchScheduleTick(runtime: BotGatewayRuntime) {
+    if (runtime.stopped || states().get(runtime.botId) !== runtime) return;
+    const sessions = listGatewayShardSessions(runtime.botId);
+    if (!sessions.length || sessions.some((session) => session.status !== "online")) return;
+    const timestamp = Date.now();
+    const minute = new Date(timestamp).toISOString().slice(0, 16);
+    if (runtime.lastScheduleMinute === minute) return;
+    runtime.lastScheduleMinute = minute;
+    void dispatchHostedPlugins(runtime.botId, "STARBOT_SCHEDULE_TICK", { timestamp, minute }).catch((error) => {
+      recordEvent(runtime.botId, {
+        type: "PLUGIN_SCHEDULE_TICK_FAILED",
+        scene: "系统",
+        status: "failed",
+        content: error instanceof Error ? error.message : "unknown error",
+        payload: { minute },
+      });
+    });
   }
 
   private async startShardBatches(runtime: BotGatewayRuntime) {
@@ -295,6 +320,7 @@ export class GatewayManager {
       if (payload.t === "READY") {
         const sessionId = (payload.d as { session_id?: string })?.session_id || null;
         updateGatewayShardSession(runtime.botId, shard.shardId, { status: "online", sessionId, sequence: payload.s });
+        this.dispatchScheduleTick(runtime);
       } else {
         updateGatewayShardSession(runtime.botId, shard.shardId, { status: "online", sequence: payload.s });
       }

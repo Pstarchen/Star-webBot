@@ -125,11 +125,11 @@ describe("hosted plugin packages", () => {
       ],
     }));
     const config = packageModule.validatePluginConfig(parsed.manifest, {
-      apis: [{ id: "weather", name: "天气", method: "GET", responseMode: "media", url: "https://api.example.com/weather", headers: {} }],
-      rules: [{ id: "weatherRule", name: "天气回复", prefix: "天气", match: "exact", apis: ["weather"], reply: { text: "晴", media: [] } }],
+      apis: [{ id: "weather", name: "天气", method: "GET", responseMode: "media", responseTemplate: "温度：{{api.weather}}", chainToApiId: "summary", url: "https://api.example.com/weather", headers: {} }],
+      rules: [{ id: "weatherRule", name: "天气回复", prefix: "天气", match: "exact", conditions: { botIds: ["bot-1"] }, apis: ["weather"], reply: { text: "晴", media: [] } }],
     });
-    expect(config.apis).toEqual([expect.objectContaining({ id: "weather", responseMode: "media" })]);
-    expect(config.rules).toHaveLength(1);
+    expect(config.apis).toEqual([expect.objectContaining({ id: "weather", responseMode: "media", chainToApiId: "summary" })]);
+    expect(config.rules).toEqual([expect.objectContaining({ conditions: expect.objectContaining({ botIds: ["bot-1"] }) })]);
     expect(() => packageModule.validatePluginConfig(parsed.manifest, {
       apis: [{ id: "invalid id", name: "天气", method: "GET", url: "https://api.example.com", headers: {} }],
       rules: [],
@@ -365,10 +365,10 @@ describe("hosted plugin runtime", () => {
   });
 
   it("passes media response mode through the sandbox HTTP bridge", async () => {
-    const requests: Array<{ responseMode?: string }> = [];
+    const requests: Array<{ responseMode?: string; timeoutMs?: number }> = [];
     const result = await runtimeModule.executeHostedPlugin({
       code: `StarBot.definePlugin({ async onEvent(event, sdk) {
-        const response = await sdk.http.request("https://cdn.example.com/video.mp4", { responseMode: "media" });
+        const response = await sdk.http.request("https://cdn.example.com/video.mp4", { responseMode: "media", timeoutMs: 4500 });
         sdk.reply.text(response.url);
       }});`,
       event: { type: "C2C_MESSAGE_CREATE", data: {} },
@@ -380,7 +380,7 @@ describe("hosted plugin runtime", () => {
       },
     });
 
-    expect(requests).toEqual([{ url: "https://cdn.example.com/video.mp4", method: "GET", responseMode: "media" }]);
+    expect(requests).toEqual([{ url: "https://cdn.example.com/video.mp4", method: "GET", responseMode: "media", timeoutMs: 4500 }]);
     expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "https://cdn.example.com/video.mp4" }]);
   });
 
@@ -454,6 +454,7 @@ describe("hosted plugin lifecycle", () => {
     `).run(botId, user.id, `plugin-test-${botId}`, cryptoModule.encryptSecret("not-used-client-secret"), now, now);
 
     const imported = await serviceModule.importPluginPackage(user, pluginPackage({
+      permissions: ["storage:kv", "log:write", "qq:api"],
       configSchema: [{ key: "step", label: "步长", type: "number", required: true, min: 1, max: 10 }],
       configPage: { entry: "config.html", height: 760 },
       configPageHtml: "<main>计数器设置</main>",
@@ -470,6 +471,17 @@ describe("hosted plugin lifecycle", () => {
     ]);
     serviceModule.deletePluginRecord(user, installed.installationId, "dashboard.note");
     expect(serviceModule.listPluginRecords(user, installed.installationId)).toEqual([]);
+    const asset = serviceModule.createPluginAsset(user, installed.installationId, {
+      name: "reply.txt",
+      mimeType: "text/plain",
+      base64: Buffer.from("hosted asset", "utf8").toString("base64"),
+    });
+    expect(serviceModule.listPluginAssets(user, installed.installationId)).toEqual([
+      expect.objectContaining({ id: asset.id, mimeType: "text/plain", size: 12 }),
+    ]);
+    expect(serviceModule.readPluginAsset(installed.installationId, asset.id).bytes.toString("utf8")).toBe("hosted asset");
+    serviceModule.deletePluginAsset(user, installed.installationId, asset.id);
+    expect(serviceModule.listPluginAssets(user, installed.installationId)).toEqual([]);
 
     await expect(serviceModule.dispatchHostedPlugins(botId, "C2C_MESSAGE_CREATE", { id: "hosted-event-1", content: "hello" }))
       .resolves.toEqual({ executed: 1, stopped: false });
@@ -477,6 +489,9 @@ describe("hosted plugin lifecycle", () => {
       .toEqual({ value_json: "3" });
     expect(databaseModule.getDatabase().prepare("SELECT status, action_count FROM plugin_runs WHERE installation_id = ?").get(installed.installationId))
       .toEqual({ status: "success", action_count: 1 });
+    expect(serviceModule.listPluginRuns(user, installed.installationId, 10)).toEqual([
+      expect.objectContaining({ eventType: "C2C_MESSAGE_CREATE", eventKey: "hosted-event-1", status: "success", actionCount: 1 }),
+    ]);
 
     const review = serviceModule.requestPluginReview(user, imported.projectId, imported.versionId);
     expect(() => serviceModule.requestPluginReview(user, imported.projectId, imported.versionId)).toThrow("PLUGIN_REVIEW_ALREADY_PENDING");
@@ -508,7 +523,7 @@ describe("hosted plugin lifecycle", () => {
       featured: false,
       priceCents: 1299,
       events: ["C2C_MESSAGE_CREATE"],
-      permissions: ["storage:kv", "log:write"],
+      permissions: ["storage:kv", "log:write", "qq:api"],
     });
 
     const nextVersion = await serviceModule.importPluginPackage(user, pluginPackage({ version: "1.1.0" }));
@@ -555,6 +570,10 @@ describe("hosted plugin lifecycle", () => {
     }));
     const installed = serviceModule.installPlugin(user!, { projectId: imported.projectId, botId: bot.id });
     expect(() => serviceModule.listPluginRecords(user!, installed.installationId)).toThrow("PLUGIN_CONFIG_PAGE_RECORDS_DENIED");
+    await expect(serviceModule.testPluginApi(user!, installed.installationId, {
+      definition: { id: "denied", name: "Denied", method: "GET", url: "https://api.example.com", headers: {} },
+      sample: {},
+    })).rejects.toThrow("PLUGIN_CONFIG_PAGE_API_TEST_DENIED");
     serviceModule.updatePluginInstallation(user!, installed.installationId, { enabled: true });
     for (let index = 0; index < serviceModule.hostedPluginLimits.autoDisableFailures; index += 1) {
       await serviceModule.dispatchHostedPlugins(bot.id, "C2C_MESSAGE_CREATE", { id: `denied-${index}` });
@@ -583,6 +602,108 @@ describe("hosted plugin lifecycle", () => {
       .resolves.toEqual({ executed: 1, stopped: false });
     expect(databaseModule.getDatabase().prepare("SELECT value_json FROM plugin_kv WHERE installation_id = ? AND key = 'lastEvent'").get(installed.installationId))
       .toEqual({ value_json: '"INTERACTION_CREATE"' });
+  });
+
+  it("renders configuration-page API test templates and extracts response paths", async () => {
+    const user = sessionModule.authenticate("plugin-author@example.com", "strong-password");
+    expect(user).not.toBeNull();
+    const bot = databaseModule.getDatabase().prepare("SELECT id FROM bots WHERE user_id = ? LIMIT 1").get(user!.id) as { id: string };
+    const imported = await serviceModule.importPluginPackage(user!, pluginPackage({
+      id: "config-api-test",
+      permissions: ["http:request"],
+      configSchema: [],
+      configPage: { entry: "config.html", height: 720 },
+      configPageHtml: "<main>API 测试</main>",
+    }));
+    const installed = serviceModule.installPlugin(user!, { projectId: imported.projectId, botId: bot.id });
+    const requests: Array<{ url: string; timeoutMs?: number; headers?: Record<string, string>; body?: unknown }> = [];
+
+    const result = await serviceModule.testPluginApi(user!, installed.installationId, {
+      definition: {
+        id: "search",
+        name: "搜索",
+        method: "POST",
+        responseMode: "json",
+        responsePath: "data.items[0].url",
+        responseType: "text",
+        url: "https://api.example.com/search?q={{encode.query}}",
+        headers: { "x-user": "{qqid}" },
+        body: { message: "{message}", private: "{{is_private}}" },
+        timeoutMs: 4500,
+      },
+      sample: { query: "北京 天气", qqid: "user-1", message: "天气 北京", is_private: true },
+    }, {
+      request: async (request) => {
+        requests.push(request);
+        return {
+          url: request.url,
+          status: 200,
+          ok: true,
+          headers: { "content-type": "application/json" },
+          body: { data: { items: [{ url: "https://cdn.example.com/weather.png" }] } },
+        };
+      },
+    });
+
+    expect(requests).toEqual([expect.objectContaining({
+      url: "https://api.example.com/search?q=%E5%8C%97%E4%BA%AC%20%E5%A4%A9%E6%B0%94",
+      timeoutMs: 4500,
+      headers: { "x-user": "user-1" },
+      body: { message: "天气 北京", private: true },
+    })]);
+    expect(result).toMatchObject({ ok: true, status: 200, extracted: "https://cdn.example.com/weather.png" });
+  });
+
+  it("dispatches schedule ticks only to installations with an enabled schedule", async () => {
+    const user = sessionModule.authenticate("plugin-author@example.com", "strong-password");
+    expect(user).not.toBeNull();
+    const bot = databaseModule.getDatabase().prepare("SELECT id FROM bots WHERE user_id = ? LIMIT 1").get(user!.id) as { id: string };
+    const imported = await serviceModule.importPluginPackage(user!, pluginPackage({
+      id: "scheduled-events",
+      events: ["*"],
+      permissions: ["storage:kv"],
+      code: "StarBot.definePlugin({ onEvent(event, sdk) { sdk.kv.set('scheduleTick', event.data.minute); } });",
+      configSchema: [{ key: "schedules", label: "计划", type: "textarea", required: true, default: "[]" }],
+    }));
+    const installed = serviceModule.installPlugin(user!, { projectId: imported.projectId, botId: bot.id });
+    serviceModule.updatePluginInstallation(user!, installed.installationId, { enabled: true, config: { schedules: "[]" } });
+
+    await expect(serviceModule.dispatchHostedPlugins(bot.id, "STARBOT_SCHEDULE_TICK", { timestamp: 1, minute: "2026-08-17T08:00" }))
+      .resolves.toEqual({ executed: 0, stopped: false });
+    serviceModule.updatePluginInstallation(user!, installed.installationId, { config: { schedules: "[{\"enabled\":false}]" } });
+    await expect(serviceModule.dispatchHostedPlugins(bot.id, "STARBOT_SCHEDULE_TICK", { timestamp: 2, minute: "2026-08-17T08:01" }))
+      .resolves.toEqual({ executed: 0, stopped: false });
+
+    serviceModule.updatePluginInstallation(user!, installed.installationId, { config: { schedules: "[{\"enabled\":true}]" } });
+    await expect(serviceModule.dispatchHostedPlugins(bot.id, "STARBOT_SCHEDULE_TICK", { timestamp: 3, minute: "2026-08-17T08:02" }))
+      .resolves.toEqual({ executed: 1, stopped: false });
+    expect(databaseModule.getDatabase().prepare("SELECT value_json FROM plugin_kv WHERE installation_id = ? AND `key` = 'scheduleTick'").get(installed.installationId))
+      .toEqual({ value_json: '"2026-08-17T08:02"' });
+  });
+
+  it("removes installation assets when a plugin is uninstalled", async () => {
+    const user = sessionModule.authenticate("plugin-author@example.com", "strong-password");
+    expect(user).not.toBeNull();
+    const bot = databaseModule.getDatabase().prepare("SELECT id FROM bots WHERE user_id = ? LIMIT 1").get(user!.id) as { id: string };
+    const imported = await serviceModule.importPluginPackage(user!, pluginPackage({
+      id: "asset-cleanup",
+      permissions: ["qq:api"],
+      configSchema: [],
+      configPage: { entry: "config.html", height: 720 },
+      configPageHtml: "<main>媒体</main>",
+    }));
+    const installed = serviceModule.installPlugin(user!, { projectId: imported.projectId, botId: bot.id });
+    const asset = serviceModule.createPluginAsset(user!, installed.installationId, {
+      name: "cleanup.txt",
+      mimeType: "text/plain",
+      base64: Buffer.from("cleanup", "utf8").toString("base64"),
+    });
+    expect(serviceModule.readPluginAsset(installed.installationId, asset.id).size).toBe(7);
+
+    serviceModule.uninstallPlugin(user!, installed.installationId);
+
+    expect(() => serviceModule.readPluginAsset(installed.installationId, asset.id)).toThrow("PLUGIN_ASSET_NOT_FOUND");
+    expect(serviceModule.listPluginCenter(user!).installations.some((item) => item.id === installed.installationId)).toBe(false);
   });
 
   it("keeps an official marketplace deletion after database restart", () => {
