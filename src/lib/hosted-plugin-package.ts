@@ -17,6 +17,7 @@ export const pluginApiDefinitionSchema = z.object({
   id: pluginApiIdSchema,
   name: z.string().trim().min(1).max(80),
   method: z.enum(["GET", "POST"]),
+  responseMode: z.enum(["json", "media"]).default("json"),
   url: z.string().trim().min(1).max(2_000),
   headers: z.record(
     z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/),

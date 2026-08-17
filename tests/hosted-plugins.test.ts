@@ -125,10 +125,10 @@ describe("hosted plugin packages", () => {
       ],
     }));
     const config = packageModule.validatePluginConfig(parsed.manifest, {
-      apis: [{ id: "weather", name: "天气", method: "GET", url: "https://api.example.com/weather", headers: {} }],
+      apis: [{ id: "weather", name: "天气", method: "GET", responseMode: "media", url: "https://api.example.com/weather", headers: {} }],
       rules: [{ id: "weatherRule", name: "天气回复", prefix: "天气", match: "exact", apis: ["weather"], reply: { text: "晴", media: [] } }],
     });
-    expect(config.apis).toHaveLength(1);
+    expect(config.apis).toEqual([expect.objectContaining({ id: "weather", responseMode: "media" })]);
     expect(config.rules).toHaveLength(1);
     expect(() => packageModule.validatePluginConfig(parsed.manifest, {
       apis: [{ id: "invalid id", name: "天气", method: "GET", url: "https://api.example.com", headers: {} }],

@@ -138,6 +138,7 @@ export type HostedPluginApiDefinition = {
   id: string;
   name: string;
   method: "GET" | "POST";
+  responseMode: "json" | "media";
   url: string;
   headers: Record<string, string>;
   body?: HostedPluginJsonValue;
