@@ -1,6 +1,5 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
-import { startQrConnect, type QrConnectCredentials } from "@tencent-connect/qqbot-connector";
+import { createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
 import { getDatabase, writeAuditLog } from "@/lib/database";
 import { createBot } from "@/lib/bot-service";
@@ -10,6 +9,9 @@ import type { BotConnectionMode, SessionUser } from "@/types/platform";
 
 const QR_SESSION_TTL_MS = 10 * 60 * 1000;
 const QR_SESSION_POLL_MS = 1_000;
+const QR_CONNECT_POLL_MS = 2_000;
+const QR_REQUEST_TIMEOUT_MS = 10_000;
+const QR_API_BASE = "https://q.qq.com";
 const activeStatuses = ["pending", "scanning"] as const;
 
 type QrSessionStatus = "pending" | "scanning" | "completed" | "expired" | "cancelled" | "failed";
@@ -36,6 +38,241 @@ type Runtime = {
 };
 
 type RuntimeState = typeof globalThis & { __starbotQrConnectRuntimes?: Map<string, Runtime> };
+
+type QrConnectCredentials = { appId: string; appSecret: string };
+
+type QrApiBody = {
+  retcode?: number | string;
+  msg?: string;
+  message?: string;
+  data?: Record<string, unknown>;
+};
+
+type QrBindTask = { taskId: string; key: string };
+
+class QrConnectorError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly status?: number,
+    public readonly retcode?: string,
+    public readonly traceId?: string | null,
+  ) {
+    super(message);
+    this.name = "QrConnectorError";
+  }
+}
+
+function qrTraceId(response: Response, body: unknown) {
+  const headerTraceId = response.headers.get("X-Tps-trace-ID") || response.headers.get("x-tps-trace-id");
+  if (headerTraceId) return headerTraceId;
+  if (body && typeof body === "object" && "trace_id" in body && typeof body.trace_id === "string") return body.trace_id;
+  return null;
+}
+
+function abortError() {
+  return new DOMException("Aborted", "AbortError");
+}
+
+function waitFor(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError());
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(abortError());
+    }, { once: true });
+  });
+}
+
+async function qrRequest(path: string, payload: Record<string, unknown>, signal: AbortSignal) {
+  const requestController = new AbortController();
+  const timeout = setTimeout(() => requestController.abort(), QR_REQUEST_TIMEOUT_MS);
+  const abortRequest = () => requestController.abort();
+  signal.addEventListener("abort", abortRequest, { once: true });
+  try {
+    const body = JSON.stringify(payload);
+    let response: Response;
+    try {
+      response = await fetch(`${QR_API_BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body,
+        signal: requestController.signal,
+        cache: "no-store",
+      });
+    } catch {
+      if (signal.aborted) throw abortError();
+      if (requestController.signal.aborted) throw new QrConnectorError("QQ 扫码服务请求超时", "QQ_BOT_QR_TIMEOUT");
+      throw new QrConnectorError("QQ 扫码服务网络请求失败", "QQ_BOT_QR_NETWORK_FAILED");
+    }
+
+    let responseText: string;
+    try {
+      responseText = await response.text();
+    } catch {
+      if (signal.aborted) throw abortError();
+      if (requestController.signal.aborted) throw new QrConnectorError("QQ 扫码服务请求超时", "QQ_BOT_QR_TIMEOUT");
+      throw new QrConnectorError("QQ 扫码服务响应读取失败", "QQ_BOT_QR_NETWORK_FAILED");
+    }
+    let parsed: unknown = null;
+    if (responseText) {
+      try { parsed = JSON.parse(responseText); } catch { parsed = null; }
+    }
+    const traceId = qrTraceId(response, parsed);
+    if (!response.ok) {
+      throw new QrConnectorError(
+        `QQ 扫码服务返回 HTTP ${response.status}`,
+        `QQ_BOT_QR_HTTP_${response.status}`,
+        response.status,
+        undefined,
+        traceId,
+      );
+    }
+    if (!parsed || typeof parsed !== "object") {
+      throw new QrConnectorError("QQ 扫码服务响应格式无效", "QQ_BOT_QR_PROTOCOL_INVALID", response.status, undefined, traceId);
+    }
+    return { body: parsed as QrApiBody, traceId };
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener("abort", abortRequest);
+  }
+}
+
+function retcodeValue(body: QrApiBody) {
+  if (typeof body.retcode !== "number" && typeof body.retcode !== "string") return null;
+  return String(body.retcode);
+}
+
+function assertQrSuccess(body: QrApiBody, traceId: string | null | undefined) {
+  const retcode = retcodeValue(body);
+  if (retcode === null) throw new QrConnectorError("QQ 扫码服务响应缺少 retcode", "QQ_BOT_QR_PROTOCOL_INVALID", undefined, undefined, traceId);
+  if (retcode !== "0") {
+    throw new QrConnectorError(
+      body.msg || body.message || `QQ 扫码服务错误 ${retcode}`,
+      `QQ_BOT_QR_API_${retcode.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32)}`,
+      undefined,
+      retcode,
+      traceId,
+    );
+  }
+}
+
+async function createBindTask(signal: AbortSignal): Promise<QrBindTask> {
+  const key = randomBytes(32).toString("base64");
+  const response = await qrRequest("/lite/create_bind_task", { key }, signal);
+  assertQrSuccess(response.body, response.traceId);
+  const taskId = response.body.data?.task_id;
+  if (typeof taskId !== "string" || !taskId.trim()) {
+    throw new QrConnectorError("QQ 扫码服务未返回 task_id", "QQ_BOT_QR_PROTOCOL_INVALID", undefined, undefined, response.traceId);
+  }
+  return { taskId: taskId.trim(), key };
+}
+
+function bindStatus(value: unknown) {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (/^\d+$/.test(normalized)) return Number(normalized);
+    if (normalized === "none") return 0;
+    if (normalized === "pending" || normalized === "scanning") return 1;
+    if (normalized === "completed" || normalized === "success" || normalized === "done") return 2;
+    if (normalized === "expired" || normalized === "expire") return 3;
+  }
+  return null;
+}
+
+function decryptBindSecret(encryptedBase64: string, keyBase64: string) {
+  try {
+    const encrypted = Buffer.from(encryptedBase64, "base64");
+    const key = Buffer.from(keyBase64, "base64");
+    if (key.length !== 32 || encrypted.length < 12 + 16) throw new Error("invalid encrypted secret");
+    const decipher = createDecipheriv("aes-256-gcm", key, encrypted.subarray(0, 12));
+    decipher.setAuthTag(encrypted.subarray(encrypted.length - 16));
+    return Buffer.concat([decipher.update(encrypted.subarray(12, encrypted.length - 16)), decipher.final()]).toString("utf8");
+  } catch {
+    throw new QrConnectorError("QQ 扫码服务返回的凭据无法解密", "QQ_BOT_QR_DECRYPT_FAILED");
+  }
+}
+
+async function pollBindResult(taskId: string, key: string, signal: AbortSignal) {
+  const response = await qrRequest("/lite/poll_bind_result", { task_id: taskId }, signal);
+  assertQrSuccess(response.body, response.traceId);
+  const data = response.body.data;
+  if (!data) throw new QrConnectorError("QQ 扫码服务响应缺少绑定结果", "QQ_BOT_QR_PROTOCOL_INVALID", undefined, undefined, response.traceId);
+  const status = bindStatus(data.status);
+  if (status === null) throw new QrConnectorError("QQ 扫码服务返回未知绑定状态", "QQ_BOT_QR_PROTOCOL_INVALID", undefined, undefined, response.traceId);
+  if (status === 2) {
+    const appId = typeof data.bot_appid === "string" ? data.bot_appid.trim() : "";
+    const encryptedSecret = typeof data.bot_encrypt_secret === "string" ? data.bot_encrypt_secret : "";
+    if (!appId || !encryptedSecret) throw new QrConnectorError("QQ 扫码服务未返回完整凭据", "QQ_BOT_QR_CREDENTIALS_INVALID", undefined, undefined, response.traceId);
+    return { status, credentials: { appId, appSecret: decryptBindSecret(encryptedSecret, key) } satisfies QrConnectCredentials };
+  }
+  return { status, credentials: null };
+}
+
+function buildQrUrl(taskId: string) {
+  return `${QR_API_BASE}/qqbot/openclaw/connect.html?task_id=${encodeURIComponent(taskId)}&source=${encodeURIComponent("StarBot")}&_wv=2`;
+}
+
+type QrConnectorCallbacks = {
+  onSuccess: (credentials: QrConnectCredentials[]) => void;
+  onFailure: (error: Error) => void;
+  onQrDisplayed: (url: string) => void;
+  onQrExpired: () => void;
+};
+
+function startQrConnector(callbacks: QrConnectorCallbacks, signal: AbortSignal) {
+  let stopped = false;
+  const run = async () => {
+    while (!signal.aborted) {
+      const task = await createBindTask(signal);
+      callbacks.onQrDisplayed(buildQrUrl(task.taskId));
+      let transientFailures = 0;
+      while (!signal.aborted) {
+        try {
+          const result = await pollBindResult(task.taskId, task.key, signal);
+          transientFailures = 0;
+          if (result.status === 2 && result.credentials) {
+            callbacks.onSuccess([result.credentials]);
+            return;
+          }
+          if (result.status === 3) {
+            callbacks.onQrExpired();
+            break;
+          }
+        } catch (error) {
+          if (signal.aborted) throw abortError();
+          const code = error instanceof QrConnectorError ? error.code : "";
+          if (code === "QQ_BOT_QR_API_30012") {
+            await waitFor(QR_CONNECT_POLL_MS + 1_000, signal);
+            continue;
+          }
+          if (error instanceof QrConnectorError && code.startsWith("QQ_BOT_QR_API_")) throw error;
+          transientFailures += 1;
+          if (transientFailures >= 3) throw error;
+          await waitFor(QR_CONNECT_POLL_MS * transientFailures, signal);
+          continue;
+        }
+        await waitFor(QR_CONNECT_POLL_MS, signal);
+      }
+    }
+    throw abortError();
+  };
+  void run().catch((error: unknown) => {
+    if (stopped && error instanceof DOMException && error.name === "AbortError") {
+      callbacks.onFailure(new Error("已取消"));
+      return;
+    }
+    callbacks.onFailure(error instanceof Error ? error : new Error(String(error)));
+  });
+  return () => {
+    stopped = true;
+  };
+}
 
 function runtimes() {
   const state = globalThis as RuntimeState;
@@ -103,6 +340,7 @@ function safeQrError(error: unknown) {
   if (error instanceof Error && error.message === "QQ_BOT_PROFILE_INVALID") return "QQ_BOT_PROFILE_INVALID";
   if (error instanceof Error) {
     const errorCode = "code" in error && typeof error.code === "string" ? error.code : "";
+    if (errorCode.startsWith("QQ_BOT_QR_")) return errorCode;
     if (errorCode === "ER_DUP_ENTRY" || /UNIQUE constraint failed|Duplicate entry|bots_user_app_idx/i.test(error.message)) {
       return "BOT_DUPLICATE";
     }
@@ -167,7 +405,7 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
 
 function startSdk(sessionId: string) {
   const controller = new AbortController();
-  const stopSdk = startQrConnect({
+  const stopSdk = startQrConnector({
     onSuccess(credentials) {
       void importCredentials(sessionId, credentials);
     },
@@ -178,8 +416,12 @@ function startSdk(sessionId: string) {
         console.error("[qq-bot-qr] connector failed", {
           sessionId,
           error: error.message.slice(0, 240),
+          code: "code" in error && typeof error.code === "string" ? error.code : undefined,
+          status: error instanceof QrConnectorError ? error.status : undefined,
+          retcode: error instanceof QrConnectorError ? error.retcode : undefined,
+          traceId: error instanceof QrConnectorError ? error.traceId : undefined,
         });
-        failSession(sessionId, cancelled ? "QQ_BOT_QR_CANCELLED" : "QQ_BOT_QR_CONNECT_FAILED");
+        failSession(sessionId, cancelled ? "QQ_BOT_QR_CANCELLED" : safeQrError(error));
       }
     },
     onQrDisplayed(url) {
@@ -197,7 +439,7 @@ function startSdk(sessionId: string) {
     onQrExpired() {
       database().prepare("UPDATE qq_bot_qr_sessions SET qr_url_cipher = NULL, updated_at = ? WHERE id = ? AND status = 'scanning'").run(new Date().toISOString(), sessionId);
     },
-  }, { displayQrCodeToConsole: false, source: "StarBot", signal: controller.signal });
+  }, controller.signal);
 
   const pollTimer = setInterval(() => {
     const row = database().prepare("SELECT status, expires_at FROM qq_bot_qr_sessions WHERE id = ?").get(sessionId) as Pick<QrSessionRow, "status" | "expires_at"> | undefined;

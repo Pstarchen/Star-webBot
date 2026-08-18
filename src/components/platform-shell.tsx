@@ -85,6 +85,11 @@ function qrErrorMessage(code: string) {
     QQ_BOT_QR_CANCELLED: "扫码已取消。",
     QQ_BOT_QR_MULTIPLE_RESULTS: "本次扫码返回了多个机器人，请重新扫码并只选择一个。",
     QQ_BOT_QR_CREDENTIALS_INVALID: "QQ 扫码服务未返回有效凭据。",
+    QQ_BOT_QR_DECRYPT_FAILED: "QQ 扫码服务返回的凭据无法解密，请重新生成二维码。",
+    QQ_BOT_QR_PROTOCOL_INVALID: "QQ 扫码服务返回了无法识别的结果，请稍后重试。",
+    QQ_BOT_QR_NETWORK_FAILED: "服务器连接 QQ 扫码服务失败，请稍后重试。",
+    QQ_BOT_QR_TIMEOUT: "QQ 扫码服务响应超时，请稍后重试。",
+    QQ_BOT_QR_POLL_FAILED: "QQ 扫码服务轮询失败，请重新生成二维码。",
     QQ_BOT_QR_CONNECT_FAILED: "QQ 扫码连接未完成，请重新生成二维码后再试。",
     QQ_BOT_QR_IMPORT_FAILED: "服务器验证 QQ 凭据时发生异常，请重新生成二维码后再试。",
     QQ_BOT_API_100001: "QQ 开放平台请求过于频繁，请稍后再扫码。",
@@ -97,6 +102,8 @@ function qrErrorMessage(code: string) {
     QQ_BOT_API_HTTP_500: "QQ 开放平台暂时不可用，请稍后重新扫码。",
     QQ_BOT_API_HTTP_504: "QQ 开放平台响应超时，请稍后重新扫码。",
   };
+  if (code.startsWith("QQ_BOT_QR_HTTP_")) return "QQ 扫码服务暂时不可用，请稍后重新生成二维码。";
+  if (code.startsWith("QQ_BOT_QR_API_")) return `QQ 扫码服务返回错误（${code.slice("QQ_BOT_QR_API_".length)}），请稍后重试。`;
   return messages[code] || "扫码绑定失败，请稍后重试。";
 }
 
