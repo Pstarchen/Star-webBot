@@ -9,6 +9,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
+import { useTimeZone } from "@/components/time-zone-provider";
+import { formatDateTime } from "@/lib/date-time";
 import { cn, formatNumber } from "@/lib/utils";
 import type { Bot } from "@/types/platform";
 
@@ -22,6 +24,7 @@ function StatusBadge({ status }: { status: Bot["status"] }) {
 }
 
 export function BotsView({ bots, onAddBot, onRefresh }: { bots: Bot[]; onAddBot: () => void; onRefresh: () => Promise<void> }) {
+  const timeZone = useTimeZone();
   const [selectedBotId, setSelectedBotId] = useState(bots[0]?.id || "");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -212,7 +215,7 @@ export function BotsView({ bots, onAddBot, onRefresh }: { bots: Bot[]; onAddBot:
                     ["使用阶段", selected.environment === "production" ? "正式使用" : "测试使用"],
                     ["接入状态", selected.status],
                     ...(selected.connectionMode === "websocket" ? [["Gateway 分片", selected.shardCount ? `${selected.onlineShards} / ${selected.shardCount}` : "连接后自动获取"]] : []),
-                    ["最近活动", selected.lastSeen === "尚未连接" ? selected.lastSeen : new Date(selected.lastSeen).toLocaleString("zh-CN")],
+                    ["最近活动", selected.lastSeen === "尚未连接" ? selected.lastSeen : formatDateTime(selected.lastSeen, timeZone, { dateStyle: "short", timeStyle: "medium" })],
                     ["事件范围", selected.connectionMode === "websocket" ? "服务端策略：群聊与单聊" : "QQ 后台已订阅事件"],
                     ["权限来源", "QQ 开放平台后台配置"],
                   ].map(([label, value]) => (

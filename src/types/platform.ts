@@ -48,8 +48,15 @@ export type SitePublicSettings = {
   copyrightText: string;
 };
 
+export type PlatformTimeSettings = {
+  configuredTimeZone: string;
+  detectedTimeZone: string;
+  effectiveTimeZone: string;
+};
+
 export type AdminSystemSettings = {
   site: SitePublicSettings;
+  time: PlatformTimeSettings;
   qq: { enabled: boolean; appId: string; appSecretConfigured: boolean; redirectUri: string };
   email: {
     registrationVerificationEnabled: boolean;

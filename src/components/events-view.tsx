@@ -9,6 +9,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
+import { useTimeZone } from "@/components/time-zone-provider";
+import { formatDateTime } from "@/lib/date-time";
 import { cn } from "@/lib/utils";
 import type { EventLog } from "@/types/platform";
 
@@ -35,6 +37,7 @@ function EventStatusBadge({ status }: { status: EventLog["status"] }) {
 }
 
 export function EventsView({ events, onRefresh }: { events: EventLog[]; onRefresh: () => Promise<void> }) {
+  const timeZone = useTimeZone();
   const [activeEventId, setActiveEventId] = useState(events[0]?.id || "");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<"all" | EventLog["status"]>("all");
@@ -128,7 +131,7 @@ export function EventsView({ events, onRefresh }: { events: EventLog[]; onRefres
                       activeEvent.id === event.id && "bg-muted",
                     )}
                   >
-                    <span className="mono-data text-[10px] text-muted-foreground md:text-xs">{new Date(event.time).toLocaleTimeString("zh-CN")}</span>
+                    <span className="mono-data text-[10px] text-muted-foreground md:text-xs">{formatDateTime(event.time, timeZone, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
                     <span className="min-w-0">
                       <span className="mono-data block truncate text-xs font-medium">{event.type}</span>
                       <span className="mt-1 block truncate text-[11px] text-muted-foreground">{event.content || "无内容摘要"}</span>

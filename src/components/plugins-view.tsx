@@ -33,7 +33,9 @@ import { PageHeader } from "@/components/ui/page-header";
 import { PluginConfigPage } from "@/components/plugin-config-page";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useTimeZone } from "@/components/time-zone-provider";
 import { formatApiError } from "@/lib/api-error";
+import { formatDateTime } from "@/lib/date-time";
 import type {
   Bot,
   HostedPluginConfigValue,
@@ -62,9 +64,9 @@ const statusLabels = {
   suspended: ["已停用", "destructive"],
 } as const;
 
-function formatDate(value: string | null) {
+function formatDate(value: string | null, timeZone: string) {
   if (!value) return "尚未运行";
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return formatDateTime(value, timeZone, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 async function requestJson<T = unknown>(url: string, init?: RequestInit) {
@@ -213,6 +215,7 @@ function MarketCard({ plugin, onDetails, onInstall, onEdit, onRemove }: {
 }
 
 export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProps) {
+  const timeZone = useTimeZone();
   const [tab, setTab] = useState("installed");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
@@ -471,7 +474,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
                       </div>
                     </div>
                     <div className="min-w-0 text-[11px]">
-                      <div className="flex items-center gap-2 text-muted-foreground"><Clock3 size={13} />{formatDate(installation.lastRunAt)}</div>
+                      <div className="flex items-center gap-2 text-muted-foreground"><Clock3 size={13} />{formatDate(installation.lastRunAt, timeZone)}</div>
                       {installation.lastRun && <div className={`mt-1.5 truncate ${installation.lastRun.status === "failed" ? "text-red-600" : "text-muted-foreground"}`}>{installation.lastRun.status === "failed" ? installation.lastRun.error : `${installation.lastRun.durationMs}ms · ${installation.lastRun.actionCount} 个动作`}</div>}
                     </div>
                     <div className="flex flex-wrap items-center justify-between gap-2 lg:justify-end">
@@ -522,7 +525,7 @@ export function PluginsView({ bots, data, userRole, onRefresh }: PluginsViewProp
         </Tabs.Content>
 
         {userRole === "admin" && <Tabs.Content value="reviews" className="outline-none">
-          {data.reviews.length ? <Card className="overflow-hidden"><div className="divide-y">{data.reviews.map((review) => <div key={review.id} className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"><div><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">{review.projectName}</h3><Badge variant="warning">等待审核</Badge><Badge variant="outline" className="mono-data">v{review.version}</Badge></div><p className="mt-1.5 text-xs text-muted-foreground">提交人 {review.authorName} · {formatDate(review.requestedAt)}</p></div><Button size="sm" onClick={() => { setReviewId(review.id); setReviewApproved(true); setReviewNote(""); }}><ShieldCheck size={14} />开始审核</Button></div>)}</div></Card> : <Card><EmptyState icon={Check} title="没有待审核插件" description="新的市场申请会显示在这里。" /></Card>}
+          {data.reviews.length ? <Card className="overflow-hidden"><div className="divide-y">{data.reviews.map((review) => <div key={review.id} className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"><div><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">{review.projectName}</h3><Badge variant="warning">等待审核</Badge><Badge variant="outline" className="mono-data">v{review.version}</Badge></div><p className="mt-1.5 text-xs text-muted-foreground">提交人 {review.authorName} · {formatDate(review.requestedAt, timeZone)}</p></div><Button size="sm" onClick={() => { setReviewId(review.id); setReviewApproved(true); setReviewNote(""); }}><ShieldCheck size={14} />开始审核</Button></div>)}</div></Card> : <Card><EmptyState icon={Check} title="没有待审核插件" description="新的市场申请会显示在这里。" /></Card>}
         </Tabs.Content>}
       </Tabs.Root>
 

@@ -1,9 +1,11 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
 import { getDatabase, seedPostInstallationData, writeAuditLog } from "@/lib/database";
+import { canonicalTimeZone } from "@/lib/date-time";
 import { hashPassword } from "@/lib/password";
-import type { AdminSystemSettings, PaymentProvider, SessionUser, SitePublicSettings } from "@/types/platform";
+import type { AdminSystemSettings, PaymentProvider, PlatformTimeSettings, SessionUser, SitePublicSettings } from "@/types/platform";
 
 type SettingsRow = {
   site_name: string;
@@ -35,6 +37,7 @@ type SettingsRow = {
   smtp_from: string;
   smtp_user: string;
   smtp_pass_cipher: string | null;
+  time_zone: string;
   install_completed: number;
 };
 
@@ -77,6 +80,27 @@ function publicSettings(row: SettingsRow): SitePublicSettings {
   };
 }
 
+function detectedServerTimeZone() {
+  let fileTimeZone = "";
+  try { fileTimeZone = readFileSync("/etc/timezone", "utf8").trim(); }
+  catch { /* Non-Linux hosts fall back to the runtime detector. */ }
+  for (const candidate of [process.env.TZ || "", fileTimeZone, Intl.DateTimeFormat().resolvedOptions().timeZone]) {
+    const canonical = canonicalTimeZone(candidate);
+    if (canonical) return canonical;
+  }
+  throw new Error("SERVER_TIME_ZONE_UNAVAILABLE");
+}
+
+function timeSettings(row: SettingsRow): PlatformTimeSettings {
+  const detectedTimeZone = detectedServerTimeZone();
+  const configuredTimeZone = canonicalTimeZone(row.time_zone) || "";
+  return {
+    configuredTimeZone,
+    detectedTimeZone,
+    effectiveTimeZone: configuredTimeZone || detectedTimeZone,
+  };
+}
+
 export function getPublicSiteSettings() {
   return publicSettings(settingsRow());
 }
@@ -89,11 +113,16 @@ export function getPublicAuthSettings() {
   };
 }
 
+export function getPlatformTimeSettings() {
+  return timeSettings(settingsRow());
+}
+
 export function getAdminSystemSettings(actor: SessionUser): AdminSystemSettings {
   if (actor.role !== "admin") throw new Error("ADMIN_REQUIRED");
   const row = settingsRow();
   return {
     site: publicSettings(row),
+    time: timeSettings(row),
     qq: { enabled: Boolean(row.qq_login_enabled), appId: row.qq_app_id, appSecretConfigured: Boolean(row.qq_app_secret_cipher || process.env.QQ_LOGIN_APP_SECRET), redirectUri: row.qq_redirect_uri },
     email: {
       registrationVerificationEnabled: Boolean(row.email_registration_verification_enabled),
@@ -115,6 +144,18 @@ export function getAdminSystemSettings(actor: SessionUser): AdminSystemSettings 
       manualInstructions: row.manual_payment_instructions,
     },
   };
+}
+
+export function updateTimeZoneSettings(actor: SessionUser, input: { timeZone: string }) {
+  if (actor.role !== "admin") throw new Error("ADMIN_REQUIRED");
+  const candidate = input.timeZone.trim();
+  const timeZone = candidate ? canonicalTimeZone(candidate) : "";
+  if (candidate && !timeZone) throw new Error("TIME_ZONE_INVALID");
+  getDatabase().prepare(`
+    UPDATE system_settings SET time_zone = ?, updated_by = ?, updated_at = ? WHERE id = 1
+  `).run(timeZone, actor.id, new Date().toISOString());
+  writeAuditLog(actor.id, "system.time_zone.update", "system_settings", "1", { timeZone: timeZone || "auto" });
+  return getAdminSystemSettings(actor);
 }
 
 export function installationStatus() {

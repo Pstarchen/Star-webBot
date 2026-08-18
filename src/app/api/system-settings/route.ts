@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { assertTrustedRequest } from "@/lib/security";
 import { getSession } from "@/lib/session";
-import { getAdminSystemSettings, updateEmailSettings, updatePaymentSettings, updateQQLoginSettings, updateSiteSettings } from "@/lib/system-settings-service";
+import { getAdminSystemSettings, updateEmailSettings, updatePaymentSettings, updateQQLoginSettings, updateSiteSettings, updateTimeZoneSettings } from "@/lib/system-settings-service";
 
 const siteSchema = z.object({
   section: z.literal("site"),
@@ -50,7 +50,12 @@ const emailSchema = z.object({
   clearPass: z.boolean().optional(),
 });
 
-const schema = z.discriminatedUnion("section", [siteSchema, qqSchema, emailSchema, paymentSchema]);
+const timeZoneSchema = z.object({
+  section: z.literal("timeZone"),
+  timeZone: z.string().trim().max(100),
+});
+
+const schema = z.discriminatedUnion("section", [siteSchema, qqSchema, emailSchema, paymentSchema, timeZoneSchema]);
 
 export async function GET() {
   const user = await getSession();
@@ -72,9 +77,11 @@ export async function PATCH(request: Request) {
       ? updateSiteSettings(user, input)
       : input.section === "qq"
         ? updateQQLoginSettings(user, input)
-        : input.section === "email"
+      : input.section === "email"
           ? updateEmailSettings(user, input)
-          : updatePaymentSettings(user, input);
+          : input.section === "payment"
+            ? updatePaymentSettings(user, input)
+            : updateTimeZoneSettings(user, input);
     return NextResponse.json({ settings });
   } catch (error) {
     const code = error instanceof Error ? error.message : "";
@@ -83,6 +90,7 @@ export async function PATCH(request: Request) {
     if (code === "EMAIL_CONFIG_INCOMPLETE") return NextResponse.json({ message: "启用邮箱验证码前需完整填写 SMTP 地址、发件邮箱和密码" }, { status: 400 });
     if (code === "PAYMENT_CONFIG_INCOMPLETE") return NextResponse.json({ message: "启用易支付前需完整填写网关地址、商户 ID 和商户密钥" }, { status: 400 });
     if (code === "PAYMENT_SANDBOX_PRODUCTION_DISABLED") return NextResponse.json({ message: "生产环境不能启用沙箱支付" }, { status: 400 });
+    if (code === "TIME_ZONE_INVALID") return NextResponse.json({ message: "请输入有效的 IANA 时区，例如 Asia/Shanghai" }, { status: 400 });
     return NextResponse.json({ message: "系统设置保存失败" }, { status: 500 });
   }
 }

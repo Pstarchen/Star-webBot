@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { useTimeZone } from "@/components/time-zone-provider";
+import { formatDateTime, hourInTimeZone } from "@/lib/date-time";
 import { cn, formatNumber } from "@/lib/utils";
 import type { Bot, EventLog } from "@/types/platform";
 
@@ -38,6 +40,7 @@ function BotStatusBadge({ status }: { status: Bot["status"] }) {
 }
 
 export function DashboardOverview({ bots, eventLogs, onAddBot, onNavigate }: DashboardOverviewProps) {
+  const timeZone = useTimeZone();
   const messageCount = bots.reduce((sum, bot) => sum + bot.messageCount, 0);
   const successRate = bots.length ? bots.reduce((sum, bot) => sum + bot.successRate, 0) / bots.length : 0;
   const averageLatency = bots.length ? bots.reduce((sum, bot) => sum + bot.latency, 0) / bots.length : 0;
@@ -46,8 +49,8 @@ export function DashboardOverview({ bots, eventLogs, onAddBot, onNavigate }: Das
   const activitySeries = Array.from({ length: 24 }, () => 0);
 
   for (const event of eventLogs) {
-    const date = new Date(event.time);
-    if (!Number.isNaN(date.getTime())) activitySeries[date.getHours()] += 1;
+    const hour = hourInTimeZone(event.time, timeZone);
+    if (Number.isInteger(hour) && hour >= 0 && hour < 24) activitySeries[hour] += 1;
   }
 
   const linePath = buildLinePath(activitySeries, 760, 190);
@@ -136,7 +139,7 @@ export function DashboardOverview({ bots, eventLogs, onAddBot, onNavigate }: Das
               </div>
               <div className="flex justify-between gap-5 text-xs">
                 <span className="flex items-center gap-2 text-muted-foreground"><Clock3 size={14} />最近事件</span>
-                <span className="truncate text-right">{eventLogs[0] ? new Date(eventLogs[0].time).toLocaleString("zh-CN") : "暂无"}</span>
+                <span className="truncate text-right">{eventLogs[0] ? formatDateTime(eventLogs[0].time, timeZone, { dateStyle: "short", timeStyle: "medium" }) : "暂无"}</span>
               </div>
             </div>
             <Button variant="ghost" className="mt-5 w-full justify-between border-t pt-4" onClick={() => onNavigate("events")}>
@@ -190,7 +193,7 @@ export function DashboardOverview({ bots, eventLogs, onAddBot, onNavigate }: Das
                     <div className="mono-data truncate text-[11px] font-medium">{event.type}</div>
                     <div className="mt-1 truncate text-xs text-muted-foreground">{event.content || event.botName}</div>
                   </div>
-                  <span className="shrink-0 text-[10px] text-muted-foreground">{new Date(event.time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground">{formatDateTime(event.time, timeZone, { hour: "2-digit", minute: "2-digit" })}</span>
                 </div>
               ))}
             </div>

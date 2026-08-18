@@ -363,6 +363,22 @@ async function runAssertions() {
   assert.equal(publicSettings.response.status, 200);
   assert.equal(publicSettings.body.settings.icpCode, "京ICP备12345678号");
 
+  const timeZoneSettings = await jsonResponse("/api/system-settings", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({ section: "timeZone", timeZone: "Asia/Shanghai" }),
+  });
+  assert.equal(timeZoneSettings.response.status, 200);
+  assert.equal(timeZoneSettings.body.settings.time.configuredTimeZone, "Asia/Shanghai");
+  assert.equal(timeZoneSettings.body.settings.time.effectiveTimeZone, "Asia/Shanghai");
+  const invalidTimeZone = await jsonResponse("/api/system-settings", {
+    method: "PATCH",
+    headers: { ...originHeaders, Cookie: adminCookie },
+    body: JSON.stringify({ section: "timeZone", timeZone: "Not/A_Time_Zone" }),
+  });
+  assert.equal(invalidTimeZone.response.status, 400);
+  results.push("administrator can override the detected server time zone with a valid IANA zone");
+
   const logoBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
   const deniedLogo = await fetch(`${baseUrl}/api/system-settings/assets/logo`, {
     method: "PUT",

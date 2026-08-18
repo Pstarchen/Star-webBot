@@ -29,6 +29,8 @@ import { Input, Textarea } from "@/components/ui/input";
 import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useTimeZone } from "@/components/time-zone-provider";
+import { formatDateTime } from "@/lib/date-time";
 import { QQ_OPENAPI_ENDPOINTS, type QQOpenApiEndpointId } from "@/lib/qq-openapi-catalog";
 import { cn } from "@/lib/utils";
 import type { Bot, BotMediaTarget } from "@/types/platform";
@@ -110,6 +112,7 @@ const officialEndpointOptions = [
 ];
 
 export function DeveloperView({ bots }: { bots: Bot[] }) {
+  const timeZone = useTimeZone();
   const [copied, setCopied] = useState<"code" | "manifest" | "">("");
   const [botId, setBotId] = useState(bots[0]?.id || "");
   const [sendMode, setSendMode] = useState<"reply" | "proactive">("reply");
@@ -449,7 +452,7 @@ export function DeveloperView({ bots }: { bots: Bot[] }) {
                 setMediaTargetType(selected.targetType);
                 setMediaTargetOpenid(selected.targetOpenid);
               }
-            }} options={mediaTargets.map((target) => ({ value: mediaTargetKey(target), label: `${target.targetType === "group" ? "群聊" : "单聊"} · ${maskedOpenid(target.targetOpenid)} · ${new Date(target.lastSeenAt).toLocaleString("zh-CN")}` }))} placeholder={mediaTargets.length ? "请选择会话目标" : "暂无可用会话目标"} ariaLabel="选择富媒体会话目标" /></label>
+            }} options={mediaTargets.map((target) => ({ value: mediaTargetKey(target), label: `${target.targetType === "group" ? "群聊" : "单聊"} · ${maskedOpenid(target.targetOpenid)} · ${formatDateTime(target.lastSeenAt, timeZone, { dateStyle: "short", timeStyle: "medium" })}` }))} placeholder={mediaTargets.length ? "请选择会话目标" : "暂无可用会话目标"} ariaLabel="选择富媒体会话目标" /></label>
             <label className="block"><span className="field-label">媒体类型</span><Select value={mediaFileType} onValueChange={(value) => { setMediaFileType(value as typeof mediaFileType); setMediaFile(null); }} options={[{ value: "1", label: "图片 PNG/JPG" }, { value: "2", label: "视频 MP4" }, { value: "3", label: "语音 SILK" }, { value: "4", label: "普通文件" }]} ariaLabel="选择媒体类型" /></label>
             {!mediaTargets.length && <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800 md:col-span-2">请先让目标用户或群聊向当前机器人发送一条消息，平台收到事件后会自动列出可用目标。</div>}
             <div className="md:col-span-2"><span className="field-label">本地文件</span><FilePicker file={mediaFile} onFileChange={setMediaFile} accept={mediaFileAccept(mediaFileType)} browseLabel="选择媒体" emptyLabel="尚未选择媒体文件" helperText="支持图片、视频、语音与普通文件，最大 200MB" disabled={mediaSending} /></div>

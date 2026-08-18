@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Check, CheckCircle2, Copy, CreditCard, FileImage, Globe2, KeyRound, LoaderCircle, LockKeyhole, Mail, MessageCircle, ReceiptText, Save, Send, Settings2, ShieldCheck, UploadCloud } from "lucide-react";
+import { Check, CheckCircle2, Clock3, Copy, CreditCard, FileImage, Globe2, KeyRound, LoaderCircle, LockKeyhole, Mail, MessageCircle, ReceiptText, Save, Send, Settings2, ShieldCheck, UploadCloud } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,7 +32,7 @@ function yuan(value: number) {
   return (value / 100).toFixed(value % 100 ? 2 : 0);
 }
 
-export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "system"; onSiteChange: (site: SitePublicSettings) => void }) {
+export function SystemSettingsView({ area, onSiteChange, onTimeZoneChange }: { area: "auth" | "system"; onSiteChange: (site: SitePublicSettings) => void; onTimeZoneChange: (timeZone: string) => void }) {
   const [settings, setSettings] = useState<AdminSystemSettings | null>(null);
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
   const [orders, setOrders] = useState<MembershipOrder[]>([]);
@@ -151,6 +151,18 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
     setSettings(body.settings); setEpayKey("");
   }
 
+  async function saveTimeZone() {
+    const current = settings;
+    if (!current) return;
+    const body = await requestJson<{ settings: AdminSystemSettings }>("/api/system-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ section: "timeZone", timeZone: current.time.configuredTimeZone }),
+    });
+    setSettings(body.settings);
+    onTimeZoneChange(body.settings.time.effectiveTimeZone);
+  }
+
   async function savePlan(plan: MembershipPlan) {
     const body = await requestJson<{ plan: MembershipPlan }>("/api/membership-plans", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan) });
     setPlans((current) => current.map((item) => item.id === body.plan.id ? body.plan : item));
@@ -165,7 +177,7 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
     <div>
       <PageHeader
         title={area === "auth" ? "登录与注册" : "系统设置"}
-        description={area === "auth" ? "配置邮箱验证、验证码登录与第三方登录方式。" : "管理站点品牌、支付渠道、会员价格与订单审核。"}
+        description={area === "auth" ? "配置邮箱验证、验证码登录与第三方登录方式。" : "管理站点品牌、显示时区、支付渠道、会员价格与订单审核。"}
       />
       {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">{error}</div>}
       {success && <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-700"><Check size={14} className="mr-2 inline" />{success}</div>}
@@ -174,7 +186,7 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
         <Tabs.List className="mb-5 flex gap-1 overflow-x-auto border-b" aria-label="系统设置分类">
           {(area === "auth"
             ? [["email", Mail, "邮箱验证"], ["qq", MessageCircle, "QQ 登录"]]
-            : [["site", Globe2, "站点"], ["payment", CreditCard, "支付"], ["plans", Settings2, "套餐"], ["orders", ReceiptText, "订单"]]
+            : [["site", Globe2, "站点"], ["timeZone", Clock3, "时区"], ["payment", CreditCard, "支付"], ["plans", Settings2, "套餐"], ["orders", ReceiptText, "订单"]]
           ).map(([value, Icon, label]) => <Tabs.Trigger key={String(value)} value={String(value)} className="flex h-10 shrink-0 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-medium text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=active]:border-foreground data-[state=active]:text-foreground"><Icon size={14} />{String(label)}</Tabs.Trigger>)}
         </Tabs.List>
 
@@ -193,6 +205,57 @@ export function SystemSettingsView({ area, onSiteChange }: { area: "auth" | "sys
             </CardContent></Card>
             <div className="space-y-5"><Card><CardHeader><CardTitle className="flex items-center gap-2"><FileImage size={15} />网站 Logo</CardTitle></CardHeader><CardContent><FilePicker file={logoFile} onFileChange={setLogoFile} accept="image/png,image/jpeg,image/webp" helperText={`建议正方形，最大 ${SITE_ASSET_MAX_LABEL}`} maxBytes={SITE_ASSET_MAX_BYTES} browseLabel="选择图片" /><Button className="mt-3 w-full" variant="outline" disabled={!logoFile || busy === "logo"} onClick={() => void run("logo", () => uploadAsset("logo", logoFile), "Logo 已更新")}><UploadCloud size={14} />上传 Logo</Button></CardContent></Card><Card><CardHeader><CardTitle className="flex items-center gap-2"><FileImage size={15} />浏览器图标</CardTitle></CardHeader><CardContent><FilePicker file={faviconFile} onFileChange={setFaviconFile} accept="image/png,image/jpeg,image/webp,image/x-icon" helperText={`推荐 64×64 PNG 或 ICO，最大 ${SITE_ASSET_MAX_LABEL}`} maxBytes={SITE_ASSET_MAX_BYTES} browseLabel="选择图标" /><Button className="mt-3 w-full" variant="outline" disabled={!faviconFile || busy === "favicon"} onClick={() => void run("favicon", () => uploadAsset("favicon", faviconFile), "网站图标已更新")}><UploadCloud size={14} />上传图标</Button></CardContent></Card></div>
           </div>
+        </Tabs.Content>
+
+        <Tabs.Content value="timeZone" className="outline-none">
+          <Card className="max-w-4xl overflow-hidden">
+            <CardHeader className="border-b">
+              <CardTitle className="flex items-center gap-2"><Clock3 size={16} />显示时区</CardTitle>
+              <CardDescription>控制控制台中的事件、机器人活动、订单和会员时间。</CardDescription>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="grid gap-5 px-5 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="space-y-5">
+                  <label className="flex items-center justify-between gap-5 rounded-md border bg-muted/20 px-4 py-3">
+                    <span><span className="block text-xs font-semibold">自动跟随服务器</span><span className="mt-1 block text-[11px] text-muted-foreground">检测到 {settings.time.detectedTimeZone}</span></span>
+                    <Switch
+                      checked={!settings.time.configuredTimeZone}
+                      onCheckedChange={(automatic) => setSettings({ ...settings, time: { ...settings.time, configuredTimeZone: automatic ? "" : settings.time.detectedTimeZone } })}
+                      aria-label="自动跟随服务器时区"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="field-label">IANA 时区</span>
+                    <Input
+                      list="starbot-time-zones"
+                      className="h-10 mono-data"
+                      value={settings.time.configuredTimeZone || settings.time.detectedTimeZone}
+                      disabled={!settings.time.configuredTimeZone}
+                      onChange={(event) => setSettings({ ...settings, time: { ...settings.time, configuredTimeZone: event.target.value } })}
+                      placeholder="Asia/Shanghai"
+                    />
+                    <datalist id="starbot-time-zones">
+                      {["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Tokyo", "Europe/London", "America/New_York", "UTC"].map((timeZone) => <option key={timeZone} value={timeZone} />)}
+                    </datalist>
+                  </label>
+                </div>
+                <div className="rounded-md border bg-muted/20 p-4">
+                  <div className="text-[11px] font-medium text-muted-foreground">当前生效</div>
+                  <div className="mono-data mt-2 text-sm font-semibold">{settings.time.effectiveTimeZone}</div>
+                  <div className="mt-4 border-t pt-4 text-xs leading-6 text-muted-foreground">
+                    {new Intl.DateTimeFormat("zh-CN", { dateStyle: "full", timeStyle: "medium", timeZone: settings.time.effectiveTimeZone }).format(new Date())}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3 border-t bg-muted/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <p className="text-xs leading-5 text-muted-foreground">业务时间仍以 UTC 保存，切换时区不会修改历史数据。</p>
+                <Button className="h-10 shrink-0 sm:min-w-36" onClick={() => void run("timeZone", saveTimeZone, "时区设置已保存")} disabled={busy === "timeZone"}>
+                  {busy === "timeZone" ? <LoaderCircle className="animate-spin" size={14} /> : <Save size={14} />}
+                  {busy === "timeZone" ? "正在保存" : "保存时区设置"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </Tabs.Content>
 
         <Tabs.Content value="qq" className="outline-none">

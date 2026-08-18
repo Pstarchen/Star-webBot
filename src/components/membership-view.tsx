@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { Select } from "@/components/ui/select";
+import { useTimeZone } from "@/components/time-zone-provider";
+import { formatDateTime } from "@/lib/date-time";
 import type { BillingCycle, MembershipOrder, MembershipPlan, PaymentChannel, PaymentProvider, SessionUser } from "@/types/platform";
 
 type MembershipCenterData = {
@@ -35,8 +37,8 @@ function formatMoney(cents: number) {
   return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(cents / 100);
 }
 
-function formatDate(value: string | null) {
-  return value ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "长期有效";
+function formatDate(value: string | null, timeZone: string) {
+  return value ? formatDateTime(value, timeZone, { dateStyle: "medium", timeStyle: "short" }) : "长期有效";
 }
 
 function cyclePrice(plan: MembershipPlan, cycle: BillingCycle) {
@@ -44,6 +46,7 @@ function cyclePrice(plan: MembershipPlan, cycle: BillingCycle) {
 }
 
 export function MembershipView({ user, onMembershipChange }: { user: SessionUser; onMembershipChange: (input: { plan: MembershipPlan; botQuota: number }) => void }) {
+  const timeZone = useTimeZone();
   const router = useRouter();
   const [data, setData] = useState<MembershipCenterData | null>(null);
   const [cycle, setCycle] = useState<BillingCycle>("monthly");
@@ -114,7 +117,7 @@ export function MembershipView({ user, onMembershipChange }: { user: SessionUser
         <CardContent className="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
           <div className="flex min-w-0 items-start gap-4">
             <div className="grid h-11 w-11 shrink-0 place-items-center rounded-md bg-foreground text-background"><Crown size={19} /></div>
-            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold">当前为 {data.current?.plan.name || user.membershipName}</h2><Badge variant="outline">{providerLabel}</Badge></div><p className="mt-1.5 text-xs text-muted-foreground">有效期至 {formatDate(data.current?.expiresAt || null)}</p></div>
+            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold">当前为 {data.current?.plan.name || user.membershipName}</h2><Badge variant="outline">{providerLabel}</Badge></div><p className="mt-1.5 text-xs text-muted-foreground">有效期至 {formatDate(data.current?.expiresAt || null, timeZone)}</p></div>
           </div>
           <div className="grid grid-cols-3 gap-px overflow-hidden rounded-md border bg-border text-center text-xs">
             {[["机器人", data.current?.plan.botQuota], ["插件", data.current?.plan.pluginQuota], ["事件保留", `${data.current?.plan.eventRetentionDays || 7} 天`]].map(([label, value]) => <div key={String(label)} className="bg-card px-4 py-3"><div className="mono-data font-semibold">{value}</div><div className="mt-1 text-[10px] text-muted-foreground">{label}</div></div>)}
@@ -155,7 +158,7 @@ export function MembershipView({ user, onMembershipChange }: { user: SessionUser
 
       <Card className="mt-5 overflow-hidden">
         <CardHeader className="border-b"><CardTitle className="flex items-center gap-2"><ReceiptText size={15} />订单记录</CardTitle><CardDescription>展示最近 20 笔会员订单及支付状态。</CardDescription></CardHeader>
-        {data.orders.length ? <div className="divide-y">{data.orders.map((order) => <div key={order.id} className="grid gap-3 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_120px_100px] sm:items-center"><div><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{order.planName} · {cycleLabels[order.billingCycle]}</span><Badge variant={order.status === "paid" ? "success" : order.status === "pending" ? "warning" : "outline"}>{orderLabels[order.status]}</Badge></div><div className="mono-data mt-1.5 text-[10px] text-muted-foreground">{order.orderNo}</div></div><div className="text-xs"><Clock3 size={12} className="mr-1.5 inline text-muted-foreground" />{formatDate(order.createdAt)}</div><div className="mono-data text-sm font-semibold sm:text-right">{formatMoney(order.amountCents)}</div></div>)}</div> : <div className="p-8 text-center text-xs text-muted-foreground">暂无会员订单</div>}
+        {data.orders.length ? <div className="divide-y">{data.orders.map((order) => <div key={order.id} className="grid gap-3 px-5 py-4 sm:grid-cols-[minmax(0,1fr)_120px_100px] sm:items-center"><div><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{order.planName} · {cycleLabels[order.billingCycle]}</span><Badge variant={order.status === "paid" ? "success" : order.status === "pending" ? "warning" : "outline"}>{orderLabels[order.status]}</Badge></div><div className="mono-data mt-1.5 text-[10px] text-muted-foreground">{order.orderNo}</div></div><div className="text-xs"><Clock3 size={12} className="mr-1.5 inline text-muted-foreground" />{formatDate(order.createdAt, timeZone)}</div><div className="mono-data text-sm font-semibold sm:text-right">{formatMoney(order.amountCents)}</div></div>)}</div> : <div className="p-8 text-center text-xs text-muted-foreground">暂无会员订单</div>}
       </Card>
     </div>
   );

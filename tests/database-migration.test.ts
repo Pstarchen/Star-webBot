@@ -115,4 +115,11 @@ describe("SDK application schema migration", () => {
     expect(columns.map((column) => column.name)).toContain("pending_project_id");
     expect(database.prepare("SELECT pending_project_id FROM plugin_market_reviews WHERE id = 'legacy-review'").get()).toEqual({ pending_project_id: "legacy-project" });
   });
+
+  it("adds the automatic server time zone setting to existing databases", () => {
+    const database = databaseModule.getDatabase();
+    const columns = database.prepare("PRAGMA table_info(system_settings)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("time_zone");
+    expect(database.prepare("SELECT time_zone FROM system_settings WHERE id = 1").get()).toEqual({ time_zone: "" });
+  });
 });

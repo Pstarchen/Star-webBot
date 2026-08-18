@@ -280,6 +280,26 @@ describe("system settings and membership billing", () => {
     }
   });
 
+  it("uses the detected server time zone by default and allows an administrator override", () => {
+    const admin = adminUser();
+    const automatic = systemSettingsModule.updateTimeZoneSettings(admin, { timeZone: "" });
+    expect(automatic.time.configuredTimeZone).toBe("");
+    expect(automatic.time.detectedTimeZone).toBeTruthy();
+    expect(automatic.time.effectiveTimeZone).toBe(automatic.time.detectedTimeZone);
+
+    const configured = systemSettingsModule.updateTimeZoneSettings(admin, { timeZone: " Asia/Shanghai " });
+    expect(configured.time).toEqual({
+      configuredTimeZone: "Asia/Shanghai",
+      detectedTimeZone: automatic.time.detectedTimeZone,
+      effectiveTimeZone: "Asia/Shanghai",
+    });
+    expect(databaseModule.getDatabase().prepare("SELECT time_zone FROM system_settings WHERE id = 1").get()).toEqual({ time_zone: "Asia/Shanghai" });
+    expect(() => systemSettingsModule.updateTimeZoneSettings(admin, { timeZone: "Not/A_Time_Zone" })).toThrow("TIME_ZONE_INVALID");
+    expect(databaseModule.getDatabase().prepare("SELECT time_zone FROM system_settings WHERE id = 1").get()).toEqual({ time_zone: "Asia/Shanghai" });
+
+    systemSettingsModule.updateTimeZoneSettings(admin, { timeZone: "" });
+  });
+
   it("stores site assets in small chunks and still reads legacy blobs", () => {
     const admin = adminUser();
     const logo = Buffer.alloc(900 * 1024, 0x5a);
