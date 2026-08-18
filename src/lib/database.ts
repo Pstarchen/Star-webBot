@@ -274,6 +274,7 @@ function migrateSqlite(database: Database.Database) {
       smtp_from TEXT NOT NULL DEFAULT '',
       smtp_user TEXT NOT NULL DEFAULT '',
       smtp_pass_cipher TEXT,
+      time_zone TEXT NOT NULL DEFAULT '',
       install_completed INTEGER NOT NULL DEFAULT 0,
       updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       updated_at TEXT NOT NULL
@@ -371,6 +372,27 @@ function migrateSqlite(database: Database.Database) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS qq_bot_qr_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      environment TEXT NOT NULL CHECK(environment IN ('production', 'sandbox')),
+      connection_mode TEXT NOT NULL CHECK(connection_mode IN ('websocket', 'webhook')),
+      status TEXT NOT NULL CHECK(status IN ('pending', 'scanning', 'completed', 'expired', 'cancelled', 'failed')),
+      qr_url_cipher TEXT,
+      qr_revision INTEGER NOT NULL DEFAULT 0,
+      bot_id TEXT REFERENCES bots(id) ON DELETE SET NULL,
+      error_code TEXT,
+      expires_at INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS qq_bot_qr_sessions_user_status_idx
+      ON qq_bot_qr_sessions(user_id, status, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS qq_bot_qr_sessions_expiry_idx
+      ON qq_bot_qr_sessions(expires_at);
+
     CREATE TABLE IF NOT EXISTS plugin_request_nonces (
       plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
       nonce_hash TEXT NOT NULL,
@@ -460,6 +482,7 @@ function migrateSqlite(database: Database.Database) {
   if (!settingsColumns.some((column) => column.name === "smtp_from")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_from TEXT NOT NULL DEFAULT ''");
   if (!settingsColumns.some((column) => column.name === "smtp_user")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_user TEXT NOT NULL DEFAULT ''");
   if (!settingsColumns.some((column) => column.name === "smtp_pass_cipher")) database.exec("ALTER TABLE system_settings ADD COLUMN smtp_pass_cipher TEXT");
+  if (!settingsColumns.some((column) => column.name === "time_zone")) database.exec("ALTER TABLE system_settings ADD COLUMN time_zone TEXT NOT NULL DEFAULT ''");
   if (!settingsColumns.some((column) => column.name === "install_completed")) database.exec("ALTER TABLE system_settings ADD COLUMN install_completed INTEGER NOT NULL DEFAULT 0");
 
   const pluginColumns = database.prepare("PRAGMA table_info(plugins)").all() as Array<{ name: string }>;
@@ -615,6 +638,12 @@ function migrateMySql(database: PlatformDatabase) {
     LIMIT 1
   `).get();
   if (!pluginConfigPageColumn) database.exec("ALTER TABLE plugin_versions ADD COLUMN config_page_html LONGTEXT NULL AFTER entry_code");
+  const timeZoneColumn = database.prepare(`
+    SELECT 1 AS found FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'system_settings' AND column_name = 'time_zone'
+    LIMIT 1
+  `).get();
+  if (!timeZoneColumn) database.exec("ALTER TABLE system_settings ADD COLUMN time_zone VARCHAR(100) NOT NULL DEFAULT '' AFTER smtp_pass_cipher");
   const pendingReviewColumn = database.prepare(`
     SELECT EXTRA AS extra FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'plugin_market_reviews' AND column_name = 'pending_project_id'

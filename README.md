@@ -95,6 +95,12 @@ QQ_LOGIN_REDIRECT_URI=http://localhost:3000/api/auth/qq/callback
 
 未配置时，登录页会明确显示“QQ 登录未配置”，不会伪装成可用功能。
 
+## QQ 机器人扫码添加
+
+进入控制台的“机器人 -> 添加机器人”，默认使用 QQ 官方扫码连接流程。点击生成二维码后，用手机 QQ 扫描并选择要绑定的 QQ 机器人；扫码成功后平台会在服务端验证机器人资料，并使用 `CREDENTIAL_ENCRYPTION_KEY` 加密保存凭据。二维码会自动刷新，关闭弹窗或超过 10 分钟未完成时会取消本次会话。
+
+该流程使用 QQ 官方的 [`@tencent-connect/qqbot-connector`](https://www.npmjs.com/package/@tencent-connect/qqbot-connector) SDK。它绑定的是 QQ 开放平台机器人，不是登录页中的 QQ 互联用户账号；机器人仍需按 QQ 开放平台的沙箱、权限和发布规则配置。
+
 ## 会员支付
 
 普通用户在“账户 -> 会员与账单”选择专业版或团队版，并按月、季度或年度购买。订单价格始终由服务端套餐配置计算，客户端不能指定金额。

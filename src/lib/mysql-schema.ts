@@ -273,6 +273,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
   smtp_from VARCHAR(255) NOT NULL DEFAULT '',
   smtp_user VARCHAR(255) NOT NULL DEFAULT '',
   smtp_pass_cipher LONGTEXT,
+  time_zone VARCHAR(100) NOT NULL DEFAULT '',
   install_completed TINYINT NOT NULL DEFAULT 0,
   updated_by VARCHAR(191),
   updated_at VARCHAR(40) NOT NULL,
@@ -366,6 +367,25 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   redirect_uri VARCHAR(2048) NOT NULL,
   expires_at BIGINT NOT NULL,
   created_at VARCHAR(40) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS qq_bot_qr_sessions (
+  id VARCHAR(191) PRIMARY KEY,
+  user_id VARCHAR(191) NOT NULL,
+  environment VARCHAR(32) NOT NULL,
+  connection_mode VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  qr_url_cipher LONGTEXT,
+  qr_revision INT NOT NULL DEFAULT 0,
+  bot_id VARCHAR(191),
+  error_code VARCHAR(255),
+  expires_at BIGINT NOT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  KEY qq_bot_qr_sessions_user_status_idx (user_id, status, created_at),
+  KEY qq_bot_qr_sessions_expiry_idx (expires_at),
+  CONSTRAINT qq_bot_qr_sessions_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT qq_bot_qr_sessions_bot_fk FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS plugin_request_nonces (

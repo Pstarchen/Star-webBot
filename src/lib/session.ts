@@ -107,6 +107,11 @@ export function deleteSessionsForUser(userId: string) {
   getDatabase().prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
 }
 
+export function getSessionUserById(userId: string): SessionUser | null {
+  const user = getDatabase().prepare(userWithMembershipSql + " WHERE users.id = ? AND users.status = 'active'").get(userId) as UserRow | undefined;
+  return user ? toSessionUser(user) : null;
+}
+
 export async function getSession(): Promise<SessionUser | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE)?.value;
