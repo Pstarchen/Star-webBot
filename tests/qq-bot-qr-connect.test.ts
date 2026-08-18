@@ -99,6 +99,13 @@ describe("QQ bot QR connect", () => {
     await expect(waitForStatus(session.id, "failed")).resolves.toMatchObject({ errorCode: "QQ_BOT_API_100016" });
   });
 
+  it("records connector failures instead of leaving a generic import error", async () => {
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    callbacks.onFailure(new Error("获取绑定任务失败: HTTP 503 from q.qq.com"));
+    await expect(waitForStatus(session.id, "failed")).resolves.toMatchObject({ errorCode: "QQ_BOT_QR_CONNECT_FAILED" });
+  });
+
   it("cancels an active session and prevents a second active session for the user", () => {
     const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
     const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "webhook" });

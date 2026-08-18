@@ -101,7 +101,12 @@ function failSession(sessionId: string, errorCode: string) {
 function safeQrError(error: unknown) {
   if (error instanceof Error && error.message === "BOT_QUOTA_EXCEEDED") return "BOT_QUOTA_EXCEEDED";
   if (error instanceof Error && error.message === "QQ_BOT_PROFILE_INVALID") return "QQ_BOT_PROFILE_INVALID";
-  if (error instanceof Error && error.message.includes("UNIQUE")) return "BOT_DUPLICATE";
+  if (error instanceof Error) {
+    const errorCode = "code" in error && typeof error.code === "string" ? error.code : "";
+    if (errorCode === "ER_DUP_ENTRY" || /UNIQUE constraint failed|Duplicate entry|bots_user_app_idx/i.test(error.message)) {
+      return "BOT_DUPLICATE";
+    }
+  }
   if (isQQApiError(error)) {
     const body = error.responseBody && typeof error.responseBody === "object" ? error.responseBody as Record<string, unknown> : {};
     const platformCode = body.err_code ?? body.code ?? body.retcode;
@@ -169,7 +174,12 @@ function startSdk(sessionId: string) {
     onFailure(error) {
       const row = database().prepare("SELECT status FROM qq_bot_qr_sessions WHERE id = ?").get(sessionId) as { status: QrSessionStatus } | undefined;
       if (row && activeStatuses.includes(row.status as (typeof activeStatuses)[number])) {
-        failSession(sessionId, error.message === "已取消" ? "QQ_BOT_QR_CANCELLED" : "QQ_BOT_QR_CONNECT_FAILED");
+        const cancelled = error.message === "已取消";
+        console.error("[qq-bot-qr] connector failed", {
+          sessionId,
+          error: error.message.slice(0, 240),
+        });
+        failSession(sessionId, cancelled ? "QQ_BOT_QR_CANCELLED" : "QQ_BOT_QR_CONNECT_FAILED");
       }
     },
     onQrDisplayed(url) {
