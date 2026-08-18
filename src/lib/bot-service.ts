@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
 import { getDatabase, writeAuditLog } from "@/lib/database";
-import { QQBotApiClient } from "@/lib/qq-api";
+import { isQQApiError, QQBotApiClient } from "@/lib/qq-api";
 import { deriveQQWebhookToken } from "@/lib/qq-webhook-token";
 import type { Bot, BotConnectionMode, BotMediaTarget, EventLog, SessionUser } from "@/types/platform";
 
@@ -100,25 +100,52 @@ export function listBots(user: SessionUser) {
   return rows.map(toBot);
 }
 
-export async function createBot(user: SessionUser, input: { appId: string; clientSecret: string; environment: "production" | "sandbox"; connectionMode: BotConnectionMode }) {
+type CreateBotOptions = {
+  allowProfileFallback?: boolean;
+};
+
+function qrProfileUnavailable(error: unknown) {
+  if (!isQQApiError(error)) return false;
+  const body = error.responseBody && typeof error.responseBody === "object" ? error.responseBody as Record<string, unknown> : {};
+  return String(body.err_code ?? body.code ?? "") === "40011034";
+}
+
+export async function createBot(
+  user: SessionUser,
+  input: { appId: string; clientSecret: string; environment: "production" | "sandbox"; connectionMode: BotConnectionMode },
+  options: CreateBotOptions = {},
+) {
   const database = getDatabase();
   const usage = database.prepare("SELECT COUNT(*) AS count FROM bots WHERE user_id = ?").get(user.id) as { count: number };
   const currentUser = database.prepare("SELECT bot_quota FROM users WHERE id = ?").get(user.id) as { bot_quota: number } | undefined;
   if (!currentUser || usage.count >= currentUser.bot_quota) throw new Error("BOT_QUOTA_EXCEEDED");
 
-  const client = new QQBotApiClient({ appId: input.appId.trim(), clientSecret: input.clientSecret });
-  const profile = (await client.getBotProfile()).body;
-  const name = typeof profile?.username === "string" ? profile.username.trim() : "";
-  if (!name || typeof profile?.id !== "string" || !profile.id.trim()) throw new Error("QQ_BOT_PROFILE_INVALID");
-
+  const normalizedAppId = input.appId.trim();
+  const client = new QQBotApiClient({ appId: normalizedAppId, clientSecret: input.clientSecret });
+  let name = "";
+  let profileFallback = false;
+  try {
+    const profile = (await client.getBotProfile()).body;
+    name = typeof profile?.username === "string" ? profile.username.trim() : "";
+    if (!name || typeof profile?.id !== "string" || !profile.id.trim()) throw new Error("QQ_BOT_PROFILE_INVALID");
+  } catch (error) {
+    if (!options.allowProfileFallback || !qrProfileUnavailable(error)) throw error;
+    profileFallback = true;
+    name = `QQ 机器人 ${maskAppId(normalizedAppId)}`;
+    console.warn("[bot-service] QQ profile unavailable after QR credential validation; using fallback name", {
+      appId: maskAppId(normalizedAppId),
+      status: isQQApiError(error) ? error.status : undefined,
+      traceId: isQQApiError(error) ? error.traceId : undefined,
+    });
+  }
   const id = randomUUID();
   const now = new Date().toISOString();
   database.prepare(`
     INSERT INTO bots (id, user_id, name, app_id, client_secret_cipher, environment, connection_mode, intents, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?)
-  `).run(id, user.id, name, input.appId.trim(), encryptSecret(input.clientSecret), input.environment, input.connectionMode, defaultQQGatewayIntents, now, now);
+  `).run(id, user.id, name, normalizedAppId, encryptSecret(input.clientSecret), input.environment, input.connectionMode, defaultQQGatewayIntents, now, now);
   clientCache().set(id, client);
-  writeAuditLog(user.id, "bot.create", "bot", id, { appId: maskAppId(input.appId), environment: input.environment, connectionMode: input.connectionMode });
+  writeAuditLog(user.id, "bot.create", "bot", id, { appId: maskAppId(normalizedAppId), environment: input.environment, connectionMode: input.connectionMode, profileFallback });
   return toBot(database.prepare("SELECT * FROM bots WHERE id = ?").get(id) as BotRow);
 }
 

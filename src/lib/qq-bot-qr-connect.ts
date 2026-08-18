@@ -380,7 +380,7 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
       clientSecret: credential.appSecret,
       environment: row.environment,
       connectionMode: row.connection_mode,
-    });
+    }, { allowProfileFallback: true });
     if (terminalUpdate(sessionId, "completed", { botId: bot.id })) {
       writeAuditLog(user.id, "bot.qr_connect.complete", "bot", bot.id, { sessionId, appId: bot.appId });
     }
@@ -392,6 +392,7 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
         status: error.status,
         traceId: error.traceId,
         platformCode: body.err_code ?? body.code ?? body.retcode,
+        message: typeof body.message === "string" ? body.message.slice(0, 240) : undefined,
       });
     } else {
       console.error("[qq-bot-qr] scanned credential import failed", {

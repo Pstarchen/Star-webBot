@@ -125,6 +125,30 @@ describe("QQ bot QR connect", () => {
     await expect(waitForStatus(session.id, "failed")).resolves.toMatchObject({ errorCode: "QQ_BOT_API_100016" });
   });
 
+  it("imports QR credentials when QQ profile propagation returns 40011034", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "q.qq.com" && url.pathname === "/lite/create_bind_task") {
+        const request = input instanceof Request ? await input.clone().json() : JSON.parse(String(init?.body || "{}"));
+        qrTaskKey = typeof request.key === "string" ? request.key : "";
+        return Response.json({ retcode: 0, msg: "success", data: { task_id: "qr-profile-delay-task" } });
+      }
+      if (url.hostname === "q.qq.com" && url.pathname === "/lite/poll_bind_result") {
+        return Response.json({ retcode: 0, msg: "success", data: { status: 2, bot_appid: "qr-profile-delay-app", bot_encrypt_secret: encryptedSecret("qr-profile-delay-secret", qrTaskKey) } });
+      }
+      if (url.pathname === "/app/getAppAccessToken") return Response.json({ access_token: "access-token", expires_in: 3600 });
+      if (url.pathname === "/users/@me") return Response.json({ err_code: 40011034, message: "bot profile is propagating" }, { status: 400 });
+      throw new Error(`Unexpected QQ URL: ${url}`);
+    });
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    const completed = await waitForStatus(session.id, "completed", 500);
+    expect(completed.botId).toBeTruthy();
+    const bot = databaseModule.getDatabase().prepare("SELECT name, app_id FROM bots WHERE id = ?").get(completed.botId) as { name: string; app_id: string };
+    expect(bot.app_id).toBe("qr-profile-delay-app");
+    expect(bot.name).toContain("QQ 机器人");
+  });
+
   it("accepts string completion states and retries QQ poll rate limits", async () => {
     let polls = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
