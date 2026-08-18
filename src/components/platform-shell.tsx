@@ -85,6 +85,14 @@ function qrErrorMessage(code: string) {
     QQ_BOT_QR_CANCELLED: "扫码已取消。",
     QQ_BOT_QR_MULTIPLE_RESULTS: "本次扫码返回了多个机器人，请重新扫码并只选择一个。",
     QQ_BOT_QR_CREDENTIALS_INVALID: "QQ 扫码服务未返回有效凭据。",
+    QQ_BOT_API_100007: "QQ 返回的机器人已失效或不存在，请在 QQ 开放平台确认机器人状态后重新扫码。",
+    QQ_BOT_API_100016: "QQ 返回的机器人凭据无效，请确认扫码选择的是当前可用的 QQ 机器人。",
+    QQ_BOT_API_10004: "QQ 开放平台未找到该机器人，请确认机器人仍处于可用状态。",
+    QQ_BOT_API_HTTP_401: "QQ 开放平台拒绝了机器人凭据，请重新扫码。",
+    QQ_BOT_API_HTTP_404: "QQ 开放平台未找到该机器人，请确认机器人状态。",
+    QQ_BOT_API_HTTP_429: "QQ 开放平台暂时限流，请稍后重新扫码。",
+    QQ_BOT_API_HTTP_500: "QQ 开放平台暂时不可用，请稍后重新扫码。",
+    QQ_BOT_API_HTTP_504: "QQ 开放平台响应超时，请稍后重新扫码。",
   };
   return messages[code] || "扫码绑定失败，请稍后重试。";
 }

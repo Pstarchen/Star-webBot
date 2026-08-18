@@ -82,6 +82,23 @@ describe("QQ bot QR connect", () => {
     expect(botServiceModule.listBots(admin)).toHaveLength(1);
   });
 
+  it("preserves QQ API credential error codes for the UI", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === "/app/getAppAccessToken") {
+        return Response.json({ err_code: 100016, message: "invalid appid or secret" }, {
+          status: 401,
+          headers: { "X-Tps-trace-ID": "qr-test-trace" },
+        });
+      }
+      throw new Error(`Unexpected QQ URL: ${url}`);
+    });
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    callbacks.onSuccess([{ appId: "invalid-app-id", appSecret: "invalid-app-secret" }]);
+    await expect(waitForStatus(session.id, "failed")).resolves.toMatchObject({ errorCode: "QQ_BOT_API_100016" });
+  });
+
   it("cancels an active session and prevents a second active session for the user", () => {
     const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
     const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "webhook" });

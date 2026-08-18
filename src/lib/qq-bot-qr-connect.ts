@@ -4,6 +4,7 @@ import { startQrConnect, type QrConnectCredentials } from "@tencent-connect/qqbo
 import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
 import { getDatabase, writeAuditLog } from "@/lib/database";
 import { createBot } from "@/lib/bot-service";
+import { isQQApiError } from "@/lib/qq-api";
 import { getSessionUserById } from "@/lib/session";
 import type { BotConnectionMode, SessionUser } from "@/types/platform";
 
@@ -101,6 +102,15 @@ function safeQrError(error: unknown) {
   if (error instanceof Error && error.message === "BOT_QUOTA_EXCEEDED") return "BOT_QUOTA_EXCEEDED";
   if (error instanceof Error && error.message === "QQ_BOT_PROFILE_INVALID") return "QQ_BOT_PROFILE_INVALID";
   if (error instanceof Error && error.message.includes("UNIQUE")) return "BOT_DUPLICATE";
+  if (isQQApiError(error)) {
+    const body = error.responseBody && typeof error.responseBody === "object" ? error.responseBody as Record<string, unknown> : {};
+    const platformCode = body.err_code ?? body.code ?? body.retcode;
+    if (typeof platformCode === "string" || typeof platformCode === "number") {
+      const normalized = String(platformCode).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32);
+      if (normalized) return `QQ_BOT_API_${normalized}`;
+    }
+    return `QQ_BOT_API_HTTP_${error.status}`;
+  }
   return "QQ_BOT_QR_IMPORT_FAILED";
 }
 
@@ -132,6 +142,20 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
       writeAuditLog(user.id, "bot.qr_connect.complete", "bot", bot.id, { sessionId, appId: bot.appId });
     }
   } catch (error) {
+    if (isQQApiError(error)) {
+      const body = error.responseBody && typeof error.responseBody === "object" ? error.responseBody as Record<string, unknown> : {};
+      console.error("[qq-bot-qr] QQ API rejected scanned credentials", {
+        sessionId,
+        status: error.status,
+        traceId: error.traceId,
+        platformCode: body.err_code ?? body.code ?? body.retcode,
+      });
+    } else {
+      console.error("[qq-bot-qr] scanned credential import failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     failSession(sessionId, safeQrError(error));
   }
 }
