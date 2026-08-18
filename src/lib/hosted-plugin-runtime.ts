@@ -105,6 +105,19 @@ const bootstrapCode = `(() => {
             finally(onFinally) { tracked.observed = true; return pending.finally(onFinally); }
           });
         },
+        uploadMediaFromUrl(targetType, targetOpenid, fileType, url, headers = {}) {
+          reserveOperation();
+          const request = { targetType: String(targetType), targetOpenid: String(targetOpenid), fileType: Number(fileType), url: String(url), headers };
+          if (typeof __starbotQQMediaUpload !== "function") return Promise.reject(new Error("QQ_MEDIA_UPLOAD_UNAVAILABLE"));
+          const pending = __starbotQQMediaUpload(safeStringify(request)).then((resultJson) => safeParse(resultJson));
+          const tracked = { observed: false, promise: pending };
+          safePush(pendingQQRequests, tracked);
+          return safeFreeze({
+            then(onFulfilled, onRejected) { tracked.observed = true; return pending.then(onFulfilled, onRejected); },
+            catch(onRejected) { tracked.observed = true; return pending.catch(onRejected); },
+            finally(onFinally) { tracked.observed = true; return pending.finally(onFinally); }
+          });
+        },
         callEndpoint(endpointId, pathParams = {}, body, query = {}) {
           const endpoint = endpointCatalog[String(endpointId)];
           if (!endpoint) throw new Error("QQ_API_ENDPOINT_UNKNOWN");
@@ -208,12 +221,30 @@ function runtimeError(value: unknown) {
   return stableCode || `PLUGIN_RUNTIME_ERROR:${message}`;
 }
 
+function qqErrorDetails(error: unknown) {
+  if (!error || typeof error !== "object") return { code: "", detail: "", stage: "" };
+  const stage = "stage" in error && typeof error.stage === "string" ? error.stage : "";
+  if (!("responseBody" in error)) return { code: "", detail: "", stage };
+  const body = (error as { responseBody?: unknown }).responseBody;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { code: "", detail: "", stage };
+  const record = body as Record<string, unknown>;
+  const nested = record.error && typeof record.error === "object" && !Array.isArray(record.error) ? record.error as Record<string, unknown> : null;
+  const codeValue = record.code ?? record.retcode ?? record.errcode ?? nested?.code;
+  const detailValue = record.message ?? record.msg ?? record.error_description ?? nested?.message ?? (typeof record.error === "string" ? record.error : "");
+  return {
+    code: codeValue === undefined || codeValue === null ? "" : String(codeValue).slice(0, 80),
+    detail: detailValue === undefined || detailValue === null ? "" : String(detailValue).slice(0, 300),
+    stage,
+  };
+}
+
 export async function executeHostedPlugin(input: {
   code: string;
   event: unknown;
   config: Record<string, unknown>;
   kv: Record<string, unknown>;
   qqRequest?: (method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body: unknown, signal: AbortSignal) => Promise<unknown>;
+  qqMediaUpload?: (request: { targetType: "group" | "c2c"; targetOpenid: string; fileType: 1 | 2 | 3 | 4; url: string; headers: Record<string, string> }, signal: AbortSignal) => Promise<unknown>;
   httpRequest?: (request: PluginHttpRequest, signal: AbortSignal) => Promise<unknown>;
 }): Promise<HostedPluginRuntimeResult> {
   const startedAt = performance.now();
@@ -260,6 +291,10 @@ export async function executeHostedPlugin(input: {
             context.newString(source.name).consume((handle) => context.setProp(errorHandle, "name", handle));
             if ("status" in source && typeof source.status === "number") context.newNumber(source.status).consume((handle) => context.setProp(errorHandle, "status", handle));
             if ("traceId" in source && typeof source.traceId === "string") context.newString(source.traceId).consume((handle) => context.setProp(errorHandle, "traceId", handle));
+            const details = qqErrorDetails(source);
+            if (details.code) context.newString(details.code).consume((handle) => context.setProp(errorHandle, "qqCode", handle));
+            if (details.detail) context.newString(details.detail).consume((handle) => context.setProp(errorHandle, "qqDetail", handle));
+            if (details.stage) context.newString(details.stage).consume((handle) => context.setProp(errorHandle, "qqStage", handle));
             deferred.reject(errorHandle);
             errorHandle.dispose();
           } finally {
@@ -273,6 +308,55 @@ export async function executeHostedPlugin(input: {
       });
       context.setProp(context.global, "__starbotQQRequest", qqRequestHandle);
       qqRequestHandle.dispose();
+    }
+
+    if (input.qqMediaUpload) {
+      const qqMediaUploadHandle = context.newFunction("__starbotQQMediaUpload", (requestJsonHandle) => {
+        const deferred = context.newPromise();
+        const requestJson = context.getString(requestJsonHandle);
+        void (async () => {
+          try {
+            const request = JSON.parse(requestJson) as { targetType?: unknown; targetOpenid?: unknown; fileType?: unknown; url?: unknown; headers?: unknown };
+            if (!["group", "c2c"].includes(String(request.targetType))) throw new Error("QQ_MEDIA_TARGET_INVALID");
+            if (!String(request.targetOpenid || "") || !String(request.url || "")) throw new Error("QQ_MEDIA_REQUEST_INVALID");
+            if (![1, 2, 3, 4].includes(Number(request.fileType))) throw new Error("QQ_MEDIA_FILE_TYPE_INVALID");
+            const result = await input.qqMediaUpload!({
+              targetType: String(request.targetType) as "group" | "c2c",
+              targetOpenid: String(request.targetOpenid),
+              fileType: Number(request.fileType) as 1 | 2 | 3 | 4,
+              url: String(request.url),
+              headers: request.headers && typeof request.headers === "object" && !Array.isArray(request.headers) ? request.headers as Record<string, string> : {},
+            }, abortController.signal);
+            if (disposed) return;
+            const resultJson = JSON.stringify(result ?? null);
+            if (Buffer.byteLength(resultJson, "utf8") > MAX_JSON_BYTES) throw new Error("PLUGIN_QQ_RESPONSE_TOO_LARGE");
+            const resultHandle = context.newString(resultJson);
+            deferred.resolve(resultHandle);
+            resultHandle.dispose();
+          } catch (error) {
+            if (disposed) return;
+            const source = error instanceof Error ? error : new Error("QQ_MEDIA_UPLOAD_FAILED");
+            const errorHandle = context.newError(source.message);
+            context.newString(source.name).consume((handle) => context.setProp(errorHandle, "name", handle));
+            if ("status" in source && typeof source.status === "number") context.newNumber(source.status).consume((handle) => context.setProp(errorHandle, "status", handle));
+            if ("traceId" in source && typeof source.traceId === "string") context.newString(source.traceId).consume((handle) => context.setProp(errorHandle, "traceId", handle));
+            const details = qqErrorDetails(source);
+            if (details.code) context.newString(details.code).consume((handle) => context.setProp(errorHandle, "qqCode", handle));
+            if (details.detail) context.newString(details.detail).consume((handle) => context.setProp(errorHandle, "qqDetail", handle));
+            if (details.stage) context.newString(details.stage).consume((handle) => context.setProp(errorHandle, "qqStage", handle));
+            deferred.reject(errorHandle);
+            errorHandle.dispose();
+          } finally {
+            if (!disposed) {
+              executionDeadline = Date.now() + MAX_EXECUTION_MS;
+              executePendingJobs();
+            }
+          }
+        })();
+        return deferred.handle;
+      });
+      context.setProp(context.global, "__starbotQQMediaUpload", qqMediaUploadHandle);
+      qqMediaUploadHandle.dispose();
     }
 
     if (input.httpRequest) {

@@ -22,6 +22,7 @@ export type StarBotPluginSdk<TConfig extends Record<string, StarBotPluginConfigV
   };
   readonly qq: {
     request<T = unknown>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<StarBotQQApiResult<T>>;
+    uploadMediaFromUrl<T = unknown>(targetType: "group" | "c2c", targetOpenid: string, fileType: 1 | 2 | 3 | 4, url: string, headers?: Record<string, string>): Promise<StarBotQQApiResult<T>>;
     callEndpoint<T = unknown>(endpointId: QQOpenApiEndpointId, pathParams?: Record<string, string | number | bigint>, body?: unknown, query?: QQOpenApiQuery): Promise<StarBotQQApiResult<T>>;
     sendC2C<T = unknown>(userOpenid: string, payload: unknown): Promise<StarBotQQApiResult<T>>;
     sendGroup<T = unknown>(groupOpenid: string, payload: unknown): Promise<StarBotQQApiResult<T>>;

@@ -1,7 +1,9 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
+import { lookup as lookupDns } from "node:dns/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 import { open, rm } from "node:fs/promises";
+import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -12,6 +14,8 @@ import { isQQApiError, type QQApiError, type QQBotApiClient } from "@/lib/qq-api
 export const QQ_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 const QQ_MEDIA_PREFIX_BYTES = 10_002_432;
 const MAX_UPLOAD_CONCURRENCY = 4;
+const REMOTE_MEDIA_MAX_REDIRECTS = 3;
+const REMOTE_MEDIA_TIMEOUT_MS = 30_000;
 
 export type QQMediaTargetType = "c2c" | "group";
 export type QQMediaFileType = 1 | 2 | 3 | 4;
@@ -30,6 +34,15 @@ export type ParsedMediaUpload = {
   md5First10m: string;
 };
 
+export type RemoteMediaUploadRequest = {
+  url: string;
+  headers?: Record<string, string>;
+  fileType: QQMediaFileType;
+  targetType: QQMediaTargetType;
+  targetOpenid: string;
+  srvSendMsg: boolean;
+};
+
 type UploadPrepareResponse = {
   upload_id: string;
   block_size: string;
@@ -45,9 +58,18 @@ const QQ_MEDIA_STAGE_LABELS: Record<QQMediaUploadStage, string> = {
 };
 
 export class QQMediaUploadError extends Error {
+  readonly status?: number;
+  readonly traceId?: string | null;
+  readonly responseBody?: unknown;
+
   constructor(public readonly stage: QQMediaUploadStage, public readonly mediaCause: unknown) {
     super(mediaCause instanceof Error ? mediaCause.message : "MEDIA_UPLOAD_FAILED");
     this.name = "QQMediaUploadError";
+    if (isQQApiError(mediaCause)) {
+      this.status = mediaCause.status;
+      this.traceId = mediaCause.traceId;
+      this.responseBody = mediaCause.responseBody;
+    }
   }
 }
 
@@ -344,6 +366,149 @@ export async function uploadQQMedia(client: QQBotApiClient, upload: ParsedMediaU
     file_name: upload.fileName,
     upload_id: body.upload_id,
   }), retryDelayMs, !upload.srvSendMsg);
+}
+
+function blockedRemoteIpv4(address: string) {
+  const parts = address.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b, c] = parts;
+  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+    || (a === 100 && b >= 64 && b <= 127) || (a === 192 && b === 0 && (c === 0 || c === 2))
+    || (a === 198 && (b === 18 || b === 19 || b === 51)) || (a === 203 && b === 0 && c === 113) || a >= 224;
+}
+
+function blockedRemoteAddress(address: string) {
+  const normalized = address.toLowerCase().split("%")[0];
+  if (isIP(normalized) === 4) return blockedRemoteIpv4(normalized);
+  if (isIP(normalized) !== 6) return true;
+  if (normalized.startsWith("::ffff:")) return blockedRemoteIpv4(normalized.slice(7));
+  return normalized === "::" || normalized === "::1" || normalized.startsWith("fc")
+    || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9")
+    || normalized.startsWith("fea") || normalized.startsWith("feb") || normalized.startsWith("ff")
+    || normalized.startsWith("2001:db8:");
+}
+
+function parseRemoteUrl(value: string) {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error("MEDIA_REMOTE_URL_INVALID"); }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("MEDIA_REMOTE_URL_INVALID");
+  if (url.username || url.password) throw new Error("MEDIA_REMOTE_URL_INVALID");
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal") || hostname.endsWith(".lan")) {
+    throw new Error("MEDIA_REMOTE_PRIVATE_ADDRESS_DENIED");
+  }
+  return url;
+}
+
+async function assertRemotePublic(url: URL) {
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const addresses = isIP(hostname) ? [{ address: hostname }] : await lookupDns(hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some((entry) => blockedRemoteAddress(entry.address))) throw new Error("MEDIA_REMOTE_PRIVATE_ADDRESS_DENIED");
+}
+
+function remoteHeaders(input: Record<string, string> | undefined) {
+  const result = new Headers();
+  const denied = new Set(["connection", "content-length", "host", "proxy-authorization", "transfer-encoding", "upgrade"]);
+  const entries = Object.entries(input || {});
+  if (entries.length > 20) throw new Error("MEDIA_REMOTE_HEADERS_INVALID");
+  for (const [rawName, rawValue] of entries) {
+    const name = rawName.trim().toLowerCase();
+    const value = String(rawValue);
+    if (!/^[a-z0-9!#$%&'*+.^_`|~-]{1,80}$/.test(name) || denied.has(name) || name.startsWith("sec-") || value.length > 2_000) throw new Error("MEDIA_REMOTE_HEADERS_INVALID");
+    result.set(name, value);
+  }
+  return result;
+}
+
+async function fetchRemoteMedia(urlValue: string, inputHeaders: Record<string, string> | undefined, signal: AbortSignal) {
+  const initial = parseRemoteUrl(urlValue);
+  let current = initial;
+  const authorizationHeaders = remoteHeaders(inputHeaders);
+  for (let redirect = 0; redirect <= REMOTE_MEDIA_MAX_REDIRECTS; redirect += 1) {
+    await assertRemotePublic(current);
+    const headers = new Headers(authorizationHeaders);
+    if (current.origin !== initial.origin) headers.delete("authorization");
+    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(REMOTE_MEDIA_TIMEOUT_MS)]);
+    const response = await fetch(current, { method: "GET", headers, redirect: "manual", signal: requestSignal, cache: "no-store" });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      if (redirect === REMOTE_MEDIA_MAX_REDIRECTS) throw new Error("MEDIA_REMOTE_REDIRECT_LIMIT");
+      const location = response.headers.get("location");
+      if (!location) throw new Error("MEDIA_REMOTE_REDIRECT_INVALID");
+      current = parseRemoteUrl(new URL(location, current).toString());
+      continue;
+    }
+    if (!response.ok || !response.body) throw new Error(`MEDIA_REMOTE_HTTP_${response.status}`);
+    return { response, url: current };
+  }
+  throw new Error("MEDIA_REMOTE_REDIRECT_LIMIT");
+}
+
+function remoteFileName(url: URL, contentType: string, fileType: QQMediaFileType) {
+  const content = contentType.split(";", 1)[0].trim().toLowerCase();
+  const byType: Record<number, string> = { 1: ".jpg", 2: ".mp4", 3: ".silk", 4: ".bin" };
+  const byContent: Record<string, string> = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "video/mp4": ".mp4",
+    "audio/silk": ".silk",
+  };
+  const extension = path.extname(url.pathname).toLowerCase();
+  const selected = byContent[content] || (extension.length <= 8 ? extension : "") || byType[fileType];
+  return safeFileName(`remote${selected}`);
+}
+
+async function downloadRemoteMedia(urlValue: string, input: RemoteMediaUploadRequest, signal: AbortSignal) {
+  const { response, url } = await fetchRemoteMedia(urlValue, input.headers, signal);
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > QQ_MEDIA_MAX_BYTES) throw new Error("MEDIA_FILE_TOO_LARGE");
+  const fileName = remoteFileName(url, response.headers.get("content-type") || "", input.fileType);
+  const tempPath = path.join(os.tmpdir(), `starbot-media-${randomUUID()}.remote`);
+  const md5 = createHash("md5");
+  const sha1 = createHash("sha1");
+  const md5First10m = createHash("md5");
+  let fileSize = 0;
+  let firstBytesRemaining = QQ_MEDIA_PREFIX_BYTES;
+  try {
+    const hashingStream = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        fileSize += chunk.length;
+        if (fileSize > QQ_MEDIA_MAX_BYTES) return callback(new Error("MEDIA_FILE_TOO_LARGE"));
+        md5.update(chunk);
+        sha1.update(chunk);
+        if (firstBytesRemaining > 0) {
+          const prefix = chunk.subarray(0, Math.min(firstBytesRemaining, chunk.length));
+          md5First10m.update(prefix);
+          firstBytesRemaining -= prefix.length;
+        }
+        callback(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(response.body as never), hashingStream, createWriteStream(tempPath, { flags: "wx" }));
+    if (!fileSize) throw new Error("MEDIA_FILE_EMPTY");
+    await assertFileTypeMatchesContent(input.fileType, tempPath);
+    return {
+      tempPath,
+      fileName,
+      fileSize,
+      fileType: input.fileType,
+      targetType: input.targetType,
+      targetOpenid: input.targetOpenid,
+      srvSendMsg: input.srvSendMsg,
+      md5: md5.digest("hex"),
+      sha1: sha1.digest("hex"),
+      md5First10m: md5First10m.digest("hex"),
+    } satisfies ParsedMediaUpload;
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function uploadQQMediaFromUrl(client: QQBotApiClient, input: RemoteMediaUploadRequest, signal: AbortSignal) {
+  const upload = await downloadRemoteMedia(input.url, input, signal);
+  try { return await uploadQQMedia(client, upload); }
+  finally { await removeParsedMediaUpload(upload); }
 }
 
 export async function removeParsedMediaUpload(upload: ParsedMediaUpload | null) {

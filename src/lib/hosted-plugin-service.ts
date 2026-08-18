@@ -13,6 +13,7 @@ import {
 } from "@/lib/hosted-plugin-package";
 import { executeHostedPlugin, validateHostedPluginCode, type HostedPluginAction } from "@/lib/hosted-plugin-runtime";
 import { requestPluginHttp } from "@/lib/plugin-http";
+import { uploadQQMediaFromUrl } from "@/lib/qq-media";
 import { validateQQApiPath } from "@/lib/qq-api";
 import type {
   HostedPluginInstallation,
@@ -913,6 +914,9 @@ export async function dispatchHostedPlugins(botId: string, eventType: string, ev
         kv: readInstallationKv(row.id),
         qqRequest: permissions.has("qq:api")
           ? (method, path, body, signal) => getBotClientInternal(botId).request(validateQQApiPath(path), method, body, signal)
+          : async () => { throw new Error("PLUGIN_PERMISSION_DENIED:qq:api"); },
+        qqMediaUpload: permissions.has("qq:api")
+          ? (request, signal) => uploadQQMediaFromUrl(getBotClientInternal(botId), { ...request, srvSendMsg: false }, signal)
           : async () => { throw new Error("PLUGIN_PERMISSION_DENIED:qq:api"); },
         httpRequest: permissions.has("http:request")
           ? (request, signal) => requestPluginHttp(request, signal)

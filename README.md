@@ -134,6 +134,8 @@ Webhook 的事件订阅在 QQ 开放平台后台完成。WebSocket 仍需在 Ide
 
 同一主机上的多个 Node 进程可共享 SQLite Gateway 租约、插件安装和兼容远程应用事件租约。跨主机部署应选择 MySQL；不要共享 SQLite 网络文件。反向代理需允许最大 201MB 请求体。
 
+系统设置中的显示时区默认按 `TZ`、`/etc/timezone`、Node 运行环境的顺序自动检测，也可由管理员填写 IANA 时区覆盖。Docker 部署应传入宿主 `TZ`，或将宿主 `/etc/localtime` 与 `/etc/timezone` 只读挂载到容器同名路径；不要在镜像内写死默认时区。
+
 QQ OAuth 与 QQ Bot 实网验收仍需要部署方提供真实凭据、已备案 HTTPS 回调和目标 OpenID；本地模拟测试不能替代 QQ 返回的成功响应与 Trace ID。
 
 真实支付还需要部署方提供兼容易支付协议的商户凭据，并在支付服务后台配置公网 HTTPS 异步通知。开发沙箱与人工确认不能作为真实在线支付验收证据。

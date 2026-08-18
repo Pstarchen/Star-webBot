@@ -164,6 +164,35 @@ describe("hosted plugin runtime", () => {
     expect(result.stopPropagation).toBe(true);
   });
 
+  it("exposes authenticated media relay without sending source headers to QQ", async () => {
+    const requests: unknown[] = [];
+    const result = await runtimeModule.executeHostedPlugin({
+      code: `StarBot.definePlugin({ async onEvent(event, sdk) {
+        const uploaded = await sdk.qq.uploadMediaFromUrl("group", "group-openid", 1, "https://api.example.com/image", { Authorization: "Bearer test-key" });
+        sdk.reply.text(uploaded.body.file_info);
+      } });`,
+      event: { type: "GROUP_MESSAGE_CREATE", data: {} },
+      config: {},
+      kv: {},
+      qqMediaUpload: async (request) => {
+        requests.push(request);
+        return { body: { file_info: "relay-file-info" }, traceId: "trace-relay" };
+      },
+      qqRequest: async (_method, _path, body) => {
+        throw new Error(`unexpected QQ request: ${JSON.stringify(body)}`);
+      },
+    });
+
+    expect(result.actions).toEqual([{ kind: "reply", format: "text", content: "relay-file-info" }]);
+    expect(requests).toEqual([{
+      targetType: "group",
+      targetOpenid: "group-openid",
+      fileType: 1,
+      url: "https://api.example.com/image",
+      headers: { Authorization: "Bearer test-key" },
+    }]);
+  });
+
   it("interrupts CPU-bound plugin code", async () => {
     await expect(runtimeModule.validateHostedPluginCode("while (true) {}"))
       .rejects.toThrow("PLUGIN_EXECUTION_TIMEOUT");
