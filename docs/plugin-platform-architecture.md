@@ -74,7 +74,7 @@ config.html
 
 事件接收和插件执行共用 Gateway/Webhook 幂等收据，因此同一个 QQ 事件通过恢复连接或双通道重复到达时不会重复运行插件。
 
-新建机器人默认 Intent 是 `DIRECT_MESSAGE (1 << 12) | GROUP_AND_C2C_EVENT (1 << 25) | PUBLIC_GUILD_MESSAGES (1 << 30)`，数值为 `1107300352`。清单的 `events` 只做运行时过滤，不修改机器人 Intent；扩展到成员、互动、论坛、音频或私域频道全量消息等事件时，必须先在 QQ 侧获得权限并由宿主管理员调整连接配置。
+新建机器人默认 Intent 是 `GROUP_AND_C2C_EVENT (1 << 25)`，数值为 `33554432`。清单的 `events` 只做运行时过滤，不修改机器人 Intent；扩展到成员、互动、论坛、音频或私域频道全量消息等事件时，必须先在 QQ 侧获得权限并由宿主管理员调整连接配置。
 
 自动回复目标只从消息事件中推断：C2C 使用 `author.user_openid`，群聊使用 `group_openid`，频道消息使用 `channel_id`，频道私信使用 `guild_id`。其他事件应由插件显式调用受控 QQ API。
 

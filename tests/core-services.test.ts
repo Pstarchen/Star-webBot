@@ -788,7 +788,7 @@ describe("request security", () => {
   });
 
   it("coordinates gateway ownership and persists shard sessions", () => {
-    expect(botServiceModule.defaultQQGatewayIntents).toBe((1 << 12) | (1 << 25) | (1 << 30));
+    expect(botServiceModule.defaultQQGatewayIntents).toBe(1 << 25);
     const database = databaseModule.getDatabase();
     const bot = database.prepare("SELECT id FROM bots ORDER BY created_at ASC LIMIT 1").get() as { id: string };
     database.prepare("UPDATE bots SET intents = 0 WHERE id = ?").run(bot.id);

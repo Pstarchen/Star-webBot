@@ -346,7 +346,7 @@ export default function PluginDevelopmentPage() {
                   <tbody className="divide-y">{eventRows.map(([event, scene, target, availability]) => <tr key={event}><td className="mono-data px-4 py-3 text-foreground">{event}</td><td className="px-4 py-3">{scene}</td><td className="mono-data px-4 py-3">{target}</td><td className="px-4 py-3">{availability}</td></tr>)}</tbody>
                 </table>
               </div>
-              <p>宿主默认 Intent 是 <InlineCode>(1 &lt;&lt; 12) | (1 &lt;&lt; 25) | (1 &lt;&lt; 30)</InlineCode>，数值 <InlineCode>1107300352</InlineCode>。清单 events 只做过滤，不会替机器人开通私域、互动、论坛等 QQ 特殊权限。非消息事件不能自动推断回复目标，应显式调用 <InlineCode>sdk.qq.send*</InlineCode>。</p>
+              <p>宿主默认 Intent 是 <InlineCode>1 &lt;&lt; 25</InlineCode>（<InlineCode>GROUP_AND_C2C_EVENT</InlineCode>），数值 <InlineCode>33554432</InlineCode>。清单 events 只做过滤，不会替机器人开通私域、互动、论坛等 QQ 特殊权限。非消息事件不能自动推断回复目标，应显式调用 <InlineCode>sdk.qq.send*</InlineCode>。</p>
               <p><InlineCode>STARBOT_SCHEDULE_TICK</InlineCode> 是宿主每分钟合成的定时事件，载荷为 <InlineCode>{`{ timestamp, minute }`}</InlineCode>。只有 Gateway 租约持有者会派发，且宿主仅执行配置中至少存在一个启用计划的安装实例；插件需显式订阅该事件或使用 <InlineCode>*</InlineCode>。</p>
               <p><InlineCode>onEvent</InlineCode> 支持同步或异步函数。运行时不提供 Node.js 模块、文件系统、环境变量、定时器、原生 fetch 或套接字；网络访问必须通过受控 SDK。</p>
             </DocSection>

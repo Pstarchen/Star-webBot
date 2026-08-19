@@ -442,12 +442,10 @@ type StarBotEvent<T = Record<string, unknown>> = {
 
 宿主会把收到的所有 QQ Dispatch（`op=0` 且存在 `t`）交给插件分发器；清单 `events` 再做第二层过滤。是否真正收到事件取决于机器人类型、QQ 开放平台授权、Webhook 监听项和 Gateway Intent。
 
-当前新建机器人默认 Gateway Intent 为 `1107300352`，即：
+当前新建机器人默认 Gateway Intent 为 `33554432`，即：
 
 ```text
-(1 << 12) DIRECT_MESSAGE
-| (1 << 25) GROUP_AND_C2C_EVENT
-| (1 << 30) PUBLIC_GUILD_MESSAGES
+(1 << 25) GROUP_AND_C2C_EVENT
 ```
 
 ### 7.1 消息事件和回复目标

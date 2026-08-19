@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS bots (
   client_secret_cipher LONGTEXT NOT NULL,
   environment VARCHAR(32) NOT NULL,
   connection_mode VARCHAR(32) NOT NULL DEFAULT 'websocket',
-  intents INT NOT NULL DEFAULT 1107300352,
+  intents INT NOT NULL DEFAULT 33554432,
   status VARCHAR(32) NOT NULL DEFAULT 'offline',
   gateway_session_id VARCHAR(255),
   gateway_sequence INT,

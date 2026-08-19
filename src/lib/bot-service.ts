@@ -32,7 +32,10 @@ export const qqGatewayIntents = {
   publicGuildMessages: 1 << 30,
 } as const;
 
-export const defaultQQGatewayIntents = qqGatewayIntents.directMessage | qqGatewayIntents.groupAndC2C | qqGatewayIntents.publicGuildMessages;
+// QQ may close a Gateway session when Identify requests an Intent that the
+// bot is not authorized to use. Keep the default aligned with the platform's
+// currently supported group and C2C event policy.
+export const defaultQQGatewayIntents = qqGatewayIntents.groupAndC2C;
 
 function clientCache() {
   const state = globalThis as ClientCache;

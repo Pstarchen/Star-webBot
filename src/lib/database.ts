@@ -47,7 +47,7 @@ function migrateSqlite(database: Database.Database) {
       client_secret_cipher TEXT NOT NULL,
       environment TEXT NOT NULL CHECK(environment IN ('production', 'sandbox')),
       connection_mode TEXT NOT NULL DEFAULT 'websocket' CHECK(connection_mode IN ('websocket', 'webhook')),
-      intents INTEGER NOT NULL DEFAULT 1107300352,
+      intents INTEGER NOT NULL DEFAULT 33554432,
       status TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('online', 'degraded', 'offline')),
       gateway_session_id TEXT,
       gateway_sequence INTEGER,
@@ -459,7 +459,6 @@ function migrateSqlite(database: Database.Database) {
   if (!botColumns.some((column) => column.name === "connection_mode")) {
     database.exec("ALTER TABLE bots ADD COLUMN connection_mode TEXT NOT NULL DEFAULT 'websocket' CHECK(connection_mode IN ('websocket', 'webhook'))");
   }
-  database.prepare("UPDATE bots SET intents = 1107300352 WHERE intents = 33554432").run();
 
   const deliveryColumns = database.prepare("PRAGMA table_info(plugin_deliveries)").all() as Array<{ name: string }>;
   if (!deliveryColumns.some((column) => column.name === "lease_owner")) database.exec("ALTER TABLE plugin_deliveries ADD COLUMN lease_owner TEXT");
@@ -631,7 +630,6 @@ function existingMySqlIndexedIdentifierLength(database: PlatformDatabase): MySql
 function migrateMySql(database: PlatformDatabase) {
   const indexedIdentifierLength = existingMySqlIndexedIdentifierLength(database);
   database.exec(mysqlSchemaForIndexedIdentifierLength(indexedIdentifierLength));
-  database.prepare("UPDATE bots SET intents = 1107300352 WHERE intents = 33554432").run();
   const pluginConfigPageColumn = database.prepare(`
     SELECT 1 AS found FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'config_page_html'
