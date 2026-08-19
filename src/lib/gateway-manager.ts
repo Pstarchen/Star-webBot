@@ -16,7 +16,7 @@ import {
   revokeGatewayLease,
   updateGatewayShardSession,
 } from "@/lib/gateway-coordination";
-import type { QQGatewayInfo } from "@/lib/qq-api";
+import { formatQQApiError, isQQApiError, qqApiErrorDetails, type QQGatewayInfo } from "@/lib/qq-api";
 
 type ShardRuntime = {
   shardId: number;
@@ -33,6 +33,7 @@ type ShardRuntime = {
 type BotGatewayRuntime = {
   botId: string;
   gatewayUrl: string;
+  requireAutoConnect: boolean;
   shards: Map<number, ShardRuntime>;
   leaseTimer?: NodeJS.Timeout;
   scheduleTimer?: NodeJS.Timeout;
@@ -83,6 +84,22 @@ function shouldClearSession(code: number) {
   return code === 4006 || code === 4007 || (code >= 4900 && code <= 4913);
 }
 
+function gatewayErrorRecord(error: unknown) {
+  if (isQQApiError(error)) {
+    const details = qqApiErrorDetails(error);
+    return {
+      content: formatQQApiError(error),
+      payload: { httpStatus: details.status, platformCode: details.code, platformMessage: details.message },
+      traceId: details.traceId,
+    };
+  }
+  return {
+    content: error instanceof Error ? error.message : "unknown error",
+    payload: {},
+    traceId: null,
+  };
+}
+
 export class GatewayManager {
   constructor(private readonly socketFactory: GatewaySocketFactory = (url) => new WebSocket(url)) {}
 
@@ -113,13 +130,26 @@ export class GatewayManager {
   }
 
   async connect(botId: string, persist = true) {
+    return this.connectWithLease(botId, persist, true);
+  }
+
+  async connectPending(botId: string) {
+    return this.connectWithLease(botId, false, false);
+  }
+
+  promotePending(botId: string) {
+    const runtime = states().get(botId);
+    if (runtime) runtime.requireAutoConnect = true;
+  }
+
+  private async connectWithLease(botId: string, persist: boolean, requireAutoConnect: boolean) {
     const pendingBootstrap = bootstrapTimers().get(botId);
     if (pendingBootstrap) clearTimeout(pendingBootstrap);
     bootstrapTimers().delete(botId);
     this.stopLocal(botId, true);
     if (persist) setBotAutoConnect(botId, true);
-    if (!acquireGatewayLease(botId)) {
-      scheduleLeaseAcquisition(botId);
+    if (!acquireGatewayLease(botId, Date.now(), requireAutoConnect)) {
+      if (requireAutoConnect) scheduleLeaseAcquisition(botId);
       if (persist) return this.status(botId);
       throw new Error("GATEWAY_ALREADY_OWNED");
     }
@@ -136,6 +166,7 @@ export class GatewayManager {
       const runtime: BotGatewayRuntime = {
         botId,
         gatewayUrl: connection.gatewayUrl,
+        requireAutoConnect,
         maxConcurrency: connection.maxConcurrency,
         shards: new Map(sessions.map((session) => [session.shardId, {
           shardId: session.shardId,
@@ -150,7 +181,7 @@ export class GatewayManager {
       };
       states().set(botId, runtime);
       runtime.leaseTimer = setInterval(() => {
-        if (!renewGatewayLease(botId)) this.stopForLostLease(runtime);
+        if (!renewGatewayLease(botId, Date.now(), runtime.requireAutoConnect)) this.stopForLostLease(runtime);
       }, Math.floor(gatewayLeaseTtlMs / 3));
       runtime.leaseTimer.unref?.();
       runtime.scheduleTimer = setInterval(() => this.dispatchScheduleTick(runtime), 15_000);
@@ -164,7 +195,8 @@ export class GatewayManager {
       releaseGatewayLease(botId);
       markGatewayShardsOffline(botId);
       if (persist && !(error instanceof Error && error.message === "BOT_NOT_FOUND")) {
-        recordEvent(botId, { type: "WS_CONNECT_RETRY", scene: "系统", status: "warning", content: error instanceof Error ? error.message : "unknown error", payload: {} });
+        const event = gatewayErrorRecord(error);
+        recordEvent(botId, { type: "WS_CONNECT_RETRY", scene: "系统", status: "warning", ...event });
         scheduleConnectionBootstrap(botId);
         return this.status(botId);
       }

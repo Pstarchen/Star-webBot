@@ -586,6 +586,59 @@ describe("request security", () => {
     }
   });
 
+  it("refreshes a rejected QQ access token once", async () => {
+    const originalFetch = globalThis.fetch;
+    const authorizationHeaders: Array<string | null> = [];
+    let tokenRequests = 0;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/app/getAppAccessToken")) {
+        tokenRequests += 1;
+        return Response.json({ access_token: `gateway-token-${tokenRequests}`, expires_in: 7200 });
+      }
+      authorizationHeaders.push(new Headers(init?.headers).get("Authorization"));
+      if (authorizationHeaders.length === 1) return Response.json({ code: 40101, message: "token rejected" }, { status: 401 });
+      return Response.json({ url: "wss://api.bot.qq.com/websocket", shards: 1, session_start_limit: { total: 1000, remaining: 1000, reset_after: 86400000, max_concurrency: 1 } });
+    }) as typeof fetch;
+
+    try {
+      const client = new qqApiModule.QQBotApiClient({ appId: "refresh-app", clientSecret: "refresh-secret" });
+      await expect(client.getGatewayInfo()).resolves.toMatchObject({ body: { url: "wss://api.bot.qq.com/websocket", shards: 1 } });
+      expect(tokenRequests).toBe(2);
+      expect(authorizationHeaders).toEqual(["QQBot gateway-token-1", "QQBot gateway-token-2"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("falls back to the common QQ Gateway while shard metadata is propagating", async () => {
+    const originalFetch = globalThis.fetch;
+    const requestedPaths: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/app/getAppAccessToken") return Response.json({ access_token: "fallback-token", expires_in: 7200 });
+      requestedPaths.push(url.pathname);
+      if (url.pathname === "/gateway/bot") return Response.json({ code: 40011034, message: "gateway metadata is propagating" }, { status: 400 });
+      if (url.pathname === "/gateway") return Response.json({ url: "wss://api.bot.qq.com/websocket" }, { headers: { "X-Tps-trace-ID": "gateway-fallback-trace" } });
+      throw new Error(`Unexpected QQ URL: ${url}`);
+    }) as typeof fetch;
+
+    try {
+      const client = new qqApiModule.QQBotApiClient({ appId: "fallback-app", clientSecret: "fallback-secret" });
+      await expect(client.getGatewayInfo()).resolves.toEqual({
+        body: {
+          url: "wss://api.bot.qq.com/websocket",
+          shards: 1,
+          session_start_limit: { total: 1, remaining: 1, reset_after: 0, max_concurrency: 1 },
+        },
+        traceId: "gateway-fallback-trace",
+      });
+      expect(requestedPaths).toEqual(["/gateway/bot", "/gateway"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("creates a bot using the official QQ profile name", async () => {
     const user = sessionModule.registerUser({ name: "Bot Owner", email: `bot-owner-${randomUUID()}@example.com`, password: "strong-password" });
     const originalFetch = globalThis.fetch;
@@ -793,6 +846,11 @@ describe("request security", () => {
     const bot = database.prepare("SELECT id FROM bots ORDER BY created_at ASC LIMIT 1").get() as { id: string };
     database.prepare("UPDATE bots SET intents = 0 WHERE id = ?").run(bot.id);
     expect(botServiceModule.getBotGatewayConfig(bot.id).intents).toBe(botServiceModule.defaultQQGatewayIntents);
+    database.prepare("UPDATE bots SET auto_connect = 0 WHERE id = ?").run(bot.id);
+    expect(gatewayCoordinationModule.acquireGatewayLease(bot.id, 900)).toBe(false);
+    expect(gatewayCoordinationModule.acquireGatewayLease(bot.id, 900, false)).toBe(true);
+    expect(gatewayCoordinationModule.renewGatewayLease(bot.id, 950, false)).toBe(true);
+    gatewayCoordinationModule.releaseGatewayLease(bot.id);
     database.prepare("UPDATE bots SET auto_connect = 1 WHERE id = ?").run(bot.id);
     expect(gatewayCoordinationModule.acquireGatewayLease(bot.id, 1_000)).toBe(true);
     expect(gatewayCoordinationModule.renewGatewayLease(bot.id, 2_000)).toBe(true);

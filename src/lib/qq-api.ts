@@ -38,6 +38,26 @@ export class QQApiError extends Error {
   }
 }
 
+export function qqApiErrorDetails(error: QQApiError) {
+  const body = error.responseBody && typeof error.responseBody === "object"
+    ? error.responseBody as Record<string, unknown>
+    : {};
+  const code = body.err_code ?? body.code ?? body.retcode;
+  const message = body.message ?? body.msg;
+  return {
+    status: error.status,
+    traceId: error.traceId,
+    code: typeof code === "string" || typeof code === "number" ? String(code) : null,
+    message: typeof message === "string" ? message.slice(0, 240) : null,
+  };
+}
+
+export function formatQQApiError(error: QQApiError) {
+  const details = qqApiErrorDetails(error);
+  const platform = [details.code, details.message].filter(Boolean).join(": ");
+  return platform ? `${error.message} (${platform})` : error.message;
+}
+
 export function isQQApiError(error: unknown): error is QQApiError {
   if (!error || typeof error !== "object") return false;
   const candidate = error as Partial<QQApiError>;
@@ -77,7 +97,24 @@ export class QQBotApiClient {
   }
 
   async getGatewayInfo() {
-    return this.request<QQGatewayInfo>("/gateway/bot", "GET");
+    try {
+      return await this.request<QQGatewayInfo>("/gateway/bot", "GET");
+    } catch (error) {
+      // Newly QR-bound bots can expose the common gateway before the sharded
+      // gateway metadata has propagated. The official SDK uses /gateway and
+      // a single shard in that case, so keep the handoff alive instead of
+      // failing the mobile connection during the propagation window.
+      if (!isQQApiError(error) || ![400, 404].includes(error.status)) throw error;
+      const fallback = await this.request<{ url: string }>("/gateway", "GET");
+      return {
+        body: {
+          url: fallback.body.url,
+          shards: 1,
+          session_start_limit: { total: 1, remaining: 1, reset_after: 0, max_concurrency: 1 },
+        },
+        traceId: fallback.traceId,
+      };
+    }
   }
 
   async getBotProfile() {
@@ -118,15 +155,22 @@ export class QQBotApiClient {
 
   async request<T = unknown>(path: string, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", payload?: unknown, signal?: AbortSignal) {
     const normalizedPath = validateQQApiPath(path);
-    const accessToken = await this.getAccessToken(signal);
-    const response = await fetch(`${QQ_API_BASE}${normalizedPath}`, {
-      method,
-      headers: { Authorization: `QQBot ${accessToken}`, "Content-Type": "application/json" },
-      body: payload === undefined ? undefined : JSON.stringify(payload),
-      signal,
-      cache: "no-store",
-    });
-    return parseQQApiResponse<T>(response);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const accessToken = await this.getAccessToken(signal);
+      const response = await fetch(`${QQ_API_BASE}${normalizedPath}`, {
+        method,
+        headers: { Authorization: `QQBot ${accessToken}`, "Content-Type": "application/json" },
+        body: payload === undefined ? undefined : JSON.stringify(payload),
+        signal,
+        cache: "no-store",
+      });
+      if (response.status === 401 && attempt === 0) {
+        this.token = undefined;
+        continue;
+      }
+      return parseQQApiResponse<T>(response);
+    }
+    throw new Error("QQ access token refresh exhausted");
   }
 
   async callEndpoint<T = unknown>(endpointId: QQOpenApiEndpointId, pathParams: QQOpenApiPathParams = {}, payload?: unknown, query: QQOpenApiQuery = {}, signal?: AbortSignal) {

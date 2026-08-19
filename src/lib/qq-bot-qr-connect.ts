@@ -2,9 +2,9 @@ import "server-only";
 import { createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
 import { getDatabase, writeAuditLog } from "@/lib/database";
-import { createBot } from "@/lib/bot-service";
+import { createBot, deleteBotInternal, setBotAutoConnect } from "@/lib/bot-service";
 import { gatewayManager } from "@/lib/gateway-manager";
-import { isQQApiError } from "@/lib/qq-api";
+import { formatQQApiError, isQQApiError, qqApiErrorDetails } from "@/lib/qq-api";
 import { getSessionUserById } from "@/lib/session";
 import type { BotConnectionMode, SessionUser } from "@/types/platform";
 
@@ -12,6 +12,9 @@ const QR_SESSION_TTL_MS = 10 * 60 * 1000;
 const QR_SESSION_POLL_MS = 1_000;
 const QR_CONNECT_POLL_MS = 2_000;
 const QR_REQUEST_TIMEOUT_MS = 10_000;
+const QR_GATEWAY_HANDOFF_TIMEOUT_MS = 75_000;
+const QR_GATEWAY_RETRY_MS = 1_000;
+const QR_GATEWAY_CONNECT_WAIT_MS = 5_000;
 const QR_API_BASE = "https://q.qq.com";
 const QR_CONNECT_SOURCE = "";
 const activeStatuses = ["pending", "scanning"] as const;
@@ -352,6 +355,44 @@ function failSession(sessionId: string, errorCode: string) {
   terminalUpdate(sessionId, "failed", { errorCode });
 }
 
+function waitWithoutAbort(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function retryableGatewayHandoffError(error: unknown) {
+  if (error instanceof Error && ["GATEWAY_ALREADY_OWNED", "QQ_BOT_QR_GATEWAY_NOT_ONLINE"].includes(error.message)) return true;
+  if (isQQApiError(error)) {
+    if (error.message === "QQ 凭据验证失败，请检查 AppID 和 Client Secret") return false;
+    return [400, 401, 404, 408, 409, 425, 429].includes(error.status) || error.status >= 500;
+  }
+  return error instanceof TypeError || (error instanceof Error && /fetch|network|timeout|temporar/i.test(error.message));
+}
+
+async function connectQrGateway(botId: string, expiresAt: number) {
+  const deadline = Math.min(expiresAt, now() + QR_GATEWAY_HANDOFF_TIMEOUT_MS);
+  let lastError: unknown;
+  while (now() < deadline) {
+    try {
+      const status = await gatewayManager.connectPending(botId);
+      const remaining = Math.max(250, deadline - now());
+      if (status.connected || await gatewayManager.waitForConnected(botId, Math.min(QR_GATEWAY_CONNECT_WAIT_MS, remaining))) return;
+      lastError = new Error("QQ_BOT_QR_GATEWAY_NOT_ONLINE");
+    } catch (error) {
+      lastError = error;
+      if (!retryableGatewayHandoffError(error)) throw error;
+    }
+    gatewayManager.disconnect(botId, false, false);
+    await waitWithoutAbort(Math.min(QR_GATEWAY_RETRY_MS, Math.max(0, deadline - now())));
+  }
+  if (lastError instanceof Error && lastError.message !== "QQ_BOT_QR_GATEWAY_NOT_ONLINE") {
+    console.warn("[qq-bot-qr] Gateway handoff timed out", {
+      botId,
+      error: isQQApiError(lastError) ? formatQQApiError(lastError) : lastError.message,
+    });
+  }
+  throw new Error("QQ_BOT_QR_GATEWAY_NOT_ONLINE");
+}
+
 function safeQrError(error: unknown) {
   if (error instanceof Error && error.message === "BOT_QUOTA_EXCEEDED") return "BOT_QUOTA_EXCEEDED";
   if (error instanceof Error && error.message === "QQ_BOT_PROFILE_INVALID") return "QQ_BOT_PROFILE_INVALID";
@@ -392,34 +433,43 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
     failSession(sessionId, "SESSION_USER_INVALID");
     return;
   }
+  let botId: string | null = null;
   try {
     const bot = await createBot(user, {
       appId: credential.appId,
       clientSecret: credential.appSecret,
       environment: row.environment,
       connectionMode: row.connection_mode,
-    }, { allowProfileFallback: true });
+    }, {
+      allowProfileFallback: true,
+      skipProfileLookup: row.connection_mode === "websocket",
+    });
+    botId = bot.id;
     if (row.connection_mode === "websocket") {
       // QQ's mobile connect page waits for online_state after SelectBindBot.
-      // Do not complete the QR session until the Gateway has actually reached
-      // READY/online, otherwise the phone remains on "连接中" and fails.
-      const gateway = await gatewayManager.connect(bot.id);
-      if (!gateway.connected && !(await gatewayManager.waitForConnected(bot.id))) {
-        throw new Error("QQ_BOT_QR_GATEWAY_NOT_ONLINE");
-      }
+      // Newly bound bots can return transient API errors while their gateway
+      // metadata propagates, so keep trying inside the mobile handoff window.
+      await connectQrGateway(bot.id, row.expires_at);
+      setBotAutoConnect(bot.id, true);
+      gatewayManager.promotePending(bot.id);
     }
-    if (terminalUpdate(sessionId, "completed", { botId: bot.id })) {
-      writeAuditLog(user.id, "bot.qr_connect.complete", "bot", bot.id, { sessionId, appId: bot.appId });
-    }
+    if (!terminalUpdate(sessionId, "completed", { botId: bot.id })) throw new Error("QQ_BOT_QR_SESSION_CLOSED");
+    writeAuditLog(user.id, "bot.qr_connect.complete", "bot", bot.id, { sessionId, appId: bot.appId });
   } catch (error) {
+    if (botId) {
+      gatewayManager.disconnect(botId, true, false);
+      deleteBotInternal(botId);
+      writeAuditLog(user.id, "bot.qr_connect.rollback", "bot", botId, { sessionId, reason: safeQrError(error) });
+    }
     if (isQQApiError(error)) {
+      const details = qqApiErrorDetails(error);
       const body = error.responseBody && typeof error.responseBody === "object" ? error.responseBody as Record<string, unknown> : {};
       console.error("[qq-bot-qr] QQ API rejected scanned credentials", {
         sessionId,
         status: error.status,
         traceId: error.traceId,
-        platformCode: body.err_code ?? body.code ?? body.retcode,
-        message: typeof body.message === "string" ? body.message.slice(0, 240) : undefined,
+        platformCode: details.code || body.err_code || body.code || body.retcode,
+        message: details.message || (typeof body.message === "string" ? body.message.slice(0, 240) : undefined),
       });
     } else {
       console.error("[qq-bot-qr] scanned credential import failed", {

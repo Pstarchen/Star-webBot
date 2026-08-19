@@ -105,6 +105,7 @@ export function listBots(user: SessionUser) {
 
 type CreateBotOptions = {
   allowProfileFallback?: boolean;
+  skipProfileLookup?: boolean;
 };
 
 function qrProfileUnavailable(error: unknown) {
@@ -127,19 +128,24 @@ export async function createBot(
   const client = new QQBotApiClient({ appId: normalizedAppId, clientSecret: input.clientSecret });
   let name = "";
   let profileFallback = false;
-  try {
-    const profile = (await client.getBotProfile()).body;
-    name = typeof profile?.username === "string" ? profile.username.trim() : "";
-    if (!name || typeof profile?.id !== "string" || !profile.id.trim()) throw new Error("QQ_BOT_PROFILE_INVALID");
-  } catch (error) {
-    if (!options.allowProfileFallback || !qrProfileUnavailable(error)) throw error;
+  if (options.skipProfileLookup) {
     profileFallback = true;
     name = `QQ 机器人 ${maskAppId(normalizedAppId)}`;
-    console.warn("[bot-service] QQ profile unavailable after QR credential validation; using fallback name", {
-      appId: maskAppId(normalizedAppId),
-      status: isQQApiError(error) ? error.status : undefined,
-      traceId: isQQApiError(error) ? error.traceId : undefined,
-    });
+  } else {
+    try {
+      const profile = (await client.getBotProfile()).body;
+      name = typeof profile?.username === "string" ? profile.username.trim() : "";
+      if (!name || typeof profile?.id !== "string" || !profile.id.trim()) throw new Error("QQ_BOT_PROFILE_INVALID");
+    } catch (error) {
+      if (!options.allowProfileFallback || !qrProfileUnavailable(error)) throw error;
+      profileFallback = true;
+      name = `QQ 机器人 ${maskAppId(normalizedAppId)}`;
+      console.warn("[bot-service] QQ profile unavailable after QR credential validation; using fallback name", {
+        appId: maskAppId(normalizedAppId),
+        status: isQQApiError(error) ? error.status : undefined,
+        traceId: isQQApiError(error) ? error.traceId : undefined,
+      });
+    }
   }
   const id = randomUUID();
   const now = new Date().toISOString();
@@ -239,6 +245,12 @@ export function deleteBot(user: SessionUser, botId: string) {
   getDatabase().prepare("DELETE FROM bots WHERE id = ?").run(botId);
   clientCache().delete(botId);
   writeAuditLog(user.id, "bot.delete", "bot", botId, { appId: maskAppId(row.app_id) });
+}
+
+export function deleteBotInternal(botId: string) {
+  getBotRowInternal(botId);
+  getDatabase().prepare("DELETE FROM bots WHERE id = ?").run(botId);
+  clientCache().delete(botId);
 }
 
 export function updateBotConnection(botId: string, input: { status: Bot["status"]; sessionId?: string | null; sequence?: number | null }) {

@@ -41,7 +41,7 @@ beforeAll(async () => {
 beforeEach(() => {
   qrTaskKey = "";
   qrPollResponse = { status: 1, bot_appid: "0", bot_encrypt_secret: "", user_openid: "" };
-  vi.spyOn(gatewayManagerModule.gatewayManager, "connect").mockResolvedValue({
+  vi.spyOn(gatewayManagerModule.gatewayManager, "connectPending").mockResolvedValue({
     connected: true,
     reconnecting: false,
     owned: true,
@@ -72,6 +72,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -101,7 +102,7 @@ describe("QQ bot QR connect", () => {
     const completed = await waitForStatus(session.id, "completed", 500);
     expect(completed.qrRevision).toBe(1);
     expect(completed.botId).toBeTruthy();
-    expect(gatewayManagerModule.gatewayManager.connect).toHaveBeenCalledWith(completed.botId);
+    expect(gatewayManagerModule.gatewayManager.connectPending).toHaveBeenCalledWith(completed.botId);
     const bot = databaseModule.getDatabase().prepare("SELECT app_id, client_secret_cipher FROM bots WHERE id = ?").get(completed.botId) as { app_id: string; client_secret_cipher: string };
     expect(bot.app_id).toBe("qr-app-id");
     expect(cryptoModule.decryptSecret(bot.client_secret_cipher)).toBe("qr-app-secret");
@@ -146,8 +147,31 @@ describe("QQ bot QR connect", () => {
     });
     const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
     qrPollResponse = { status: 2, bot_appid: "invalid-app-id", bot_encrypt_secret: "", user_openid: "" };
-    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "webhook" });
     await expect(waitForStatus(session.id, "failed")).resolves.toMatchObject({ errorCode: "QQ_BOT_API_100016" });
+  });
+
+  it("retries a transient Gateway authorization failure before completing the QR handoff", async () => {
+    const qqApiModule = await import("@/lib/qq-api");
+    vi.useFakeTimers();
+    vi.spyOn(gatewayManagerModule.gatewayManager, "connectPending")
+      .mockRejectedValueOnce(new qqApiModule.QQApiError("QQ API 请求失败，HTTP 401", 401, "qr-gateway-trace", { code: 40011034, message: "bot is propagating" }))
+      .mockResolvedValue({
+        connected: true,
+        reconnecting: false,
+        owned: true,
+        shardCount: 1,
+        onlineShards: 1,
+        lastAckAt: Date.now(),
+      });
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    qrPollResponse = { status: 2, bot_appid: "qr-transient-gateway-app", bot_encrypt_secret: "", user_openid: "" };
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    await vi.advanceTimersByTimeAsync(1_100);
+    const completed = botQrModule.getQrSession(admin, session.id);
+    expect(completed).toMatchObject({ status: "completed", errorCode: null });
+    expect(gatewayManagerModule.gatewayManager.connectPending).toHaveBeenCalledTimes(2);
+    expect(databaseModule.getDatabase().prepare("SELECT auto_connect FROM bots WHERE id = ?").get(completed.botId)).toEqual({ auto_connect: 1 });
   });
 
   it("imports QR credentials when QQ profile propagation returns 40011034", async () => {
@@ -197,7 +221,8 @@ describe("QQ bot QR connect", () => {
   });
 
   it("fails QR import when the Gateway never becomes online", async () => {
-    vi.spyOn(gatewayManagerModule.gatewayManager, "connect").mockResolvedValue({
+    vi.useFakeTimers();
+    vi.spyOn(gatewayManagerModule.gatewayManager, "connectPending").mockResolvedValue({
       connected: false,
       reconnecting: true,
       owned: true,
@@ -209,7 +234,10 @@ describe("QQ bot QR connect", () => {
     const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
     qrPollResponse = { status: 2, bot_appid: "qr-offline-gateway-app", bot_encrypt_secret: "", user_openid: "" };
     const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
-    await expect(waitForStatus(session.id, "failed", 500)).resolves.toMatchObject({ errorCode: "QQ_BOT_QR_GATEWAY_NOT_ONLINE" });
+    await vi.advanceTimersByTimeAsync(76_000);
+    expect(botQrModule.getQrSession(admin, session.id)).toMatchObject({ status: "failed", errorCode: "QQ_BOT_QR_GATEWAY_NOT_ONLINE", botId: null });
+    expect(databaseModule.getDatabase().prepare("SELECT COUNT(*) AS count FROM bots WHERE app_id = ?").get("qr-offline-gateway-app")).toEqual({ count: 0 });
+    expect(databaseModule.getDatabase().prepare("SELECT COUNT(*) AS count FROM gateway_leases").get()).toEqual({ count: 0 });
   });
 
   it("accepts string completion states and retries QQ poll rate limits", async () => {

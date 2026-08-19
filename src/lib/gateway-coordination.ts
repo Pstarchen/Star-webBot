@@ -21,14 +21,15 @@ function ownerId() {
   return state.__starbotGatewayOwnerId;
 }
 
-export function acquireGatewayLease(botId: string, now = Date.now()) {
+export function acquireGatewayLease(botId: string, now = Date.now(), requireAutoConnect = true) {
   const database = getDatabase();
   const owner = ownerId();
   return database.transaction(() => {
     const eligible = database.prepare(`
       SELECT bots.id FROM bots JOIN users ON users.id = bots.user_id
-      WHERE bots.id = ? AND bots.auto_connect = 1 AND bots.connection_mode = 'websocket' AND users.status = 'active'
-    `).get(botId);
+      WHERE bots.id = ? AND bots.connection_mode = 'websocket' AND users.status = 'active'
+        AND (? = 0 OR bots.auto_connect = 1)
+    `).get(botId, requireAutoConnect ? 1 : 0);
     if (!eligible) return false;
     const current = database.prepare("SELECT owner_id, expires_at FROM gateway_leases WHERE bot_id = ?").get(botId) as { owner_id: string; expires_at: number } | undefined;
     if (current && current.owner_id !== owner && current.expires_at > now) return false;
@@ -41,11 +42,12 @@ export function acquireGatewayLease(botId: string, now = Date.now()) {
   })();
 }
 
-export function renewGatewayLease(botId: string, now = Date.now()) {
+export function renewGatewayLease(botId: string, now = Date.now(), requireAutoConnect = true) {
   const eligible = getDatabase().prepare(`
     SELECT bots.id FROM bots JOIN users ON users.id = bots.user_id
-    WHERE bots.id = ? AND bots.auto_connect = 1 AND bots.connection_mode = 'websocket' AND users.status = 'active'
-  `).get(botId);
+    WHERE bots.id = ? AND bots.connection_mode = 'websocket' AND users.status = 'active'
+      AND (? = 0 OR bots.auto_connect = 1)
+  `).get(botId, requireAutoConnect ? 1 : 0);
   if (!eligible) return false;
   const result = getDatabase().prepare(`
     UPDATE gateway_leases SET expires_at = ?, updated_at = ? WHERE bot_id = ? AND owner_id = ?
