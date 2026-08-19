@@ -131,7 +131,7 @@ function AddBotDialog({
 }) {
   const [appId, setAppId] = useState("");
   const [secret, setSecret] = useState("");
-  const [environment, setEnvironment] = useState<"production" | "sandbox">("sandbox");
+  const [environment, setEnvironment] = useState<"production" | "sandbox">("production");
   const [connectionMode, setConnectionMode] = useState<"websocket" | "webhook">("websocket");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -235,7 +235,7 @@ function AddBotDialog({
       });
       setAppId("");
       setSecret("");
-      setEnvironment("sandbox");
+      setEnvironment("production");
       setConnectionMode("websocket");
       closeDialog(false);
     } catch (submitError) {

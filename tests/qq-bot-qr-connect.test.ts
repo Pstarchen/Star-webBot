@@ -14,6 +14,7 @@ let sessionModule: typeof import("@/lib/session");
 let gatewayManagerModule: typeof import("@/lib/gateway-manager");
 let qrPollResponse: Record<string, unknown> = { status: 1, bot_appid: "0", bot_encrypt_secret: "", user_openid: "" };
 let qrTaskKey = "";
+let qrRequestHosts: string[] = [];
 
 function encryptedSecret(secret: string, keyBase64: string) {
   const iv = randomBytes(12);
@@ -40,6 +41,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   qrTaskKey = "";
+  qrRequestHosts = [];
   qrPollResponse = { status: 1, bot_appid: "0", bot_encrypt_secret: "", user_openid: "" };
   vi.spyOn(gatewayManagerModule.gatewayManager, "connectPending").mockResolvedValue({
     connected: true,
@@ -52,12 +54,14 @@ beforeEach(() => {
   vi.spyOn(gatewayManagerModule.gatewayManager, "waitForConnected").mockResolvedValue(true);
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
-    if (url.hostname === "q.qq.com" && url.pathname === "/lite/create_bind_task") {
+    if (["q.qq.com", "test.q.qq.com"].includes(url.hostname) && url.pathname === "/lite/create_bind_task") {
+      qrRequestHosts.push(url.hostname);
       const request = input instanceof Request ? await input.clone().json() : JSON.parse(String(init?.body || "{}"));
       qrTaskKey = typeof request.key === "string" ? request.key : "";
       return Response.json({ retcode: 0, msg: "success", data: { task_id: "qr-test-task" } });
     }
-    if (url.hostname === "q.qq.com" && url.pathname === "/lite/poll_bind_result") {
+    if (["q.qq.com", "test.q.qq.com"].includes(url.hostname) && url.pathname === "/lite/poll_bind_result") {
+      qrRequestHosts.push(url.hostname);
       const response = { ...qrPollResponse };
       if (response.status === 2 && !response.bot_encrypt_secret) {
         response.bot_appid ||= "qr-app-id";
@@ -118,7 +122,21 @@ describe("QQ bot QR connect", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const qrUrl = botQrModule.getQrSessionImage(admin, session.id);
+    expect(qrRequestHosts[0]).toBe("test.q.qq.com");
+    expect(new URL(qrUrl).hostname).toBe("q.qq.com");
     expect(new URL(qrUrl).searchParams.get("source")).toBe("");
+    botQrModule.cancelQrSession(admin, session.id);
+  });
+
+  it("uses q.qq.com for production bind API calls", async () => {
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "webhook" });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const current = botQrModule.getQrSession(admin, session.id);
+      if (current.qrRevision > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(qrRequestHosts[0]).toBe("q.qq.com");
     botQrModule.cancelQrSession(admin, session.id);
   });
 

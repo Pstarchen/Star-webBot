@@ -15,7 +15,11 @@ const QR_REQUEST_TIMEOUT_MS = 10_000;
 const QR_GATEWAY_HANDOFF_TIMEOUT_MS = 75_000;
 const QR_GATEWAY_RETRY_MS = 1_000;
 const QR_GATEWAY_CONNECT_WAIT_MS = 5_000;
-const QR_API_BASE = "https://q.qq.com";
+const QR_CONNECT_BASE = "https://q.qq.com";
+const QR_API_HOSTS = {
+  production: "q.qq.com",
+  sandbox: "test.q.qq.com",
+} as const;
 const QR_CONNECT_SOURCE = "";
 const activeStatuses = ["pending", "scanning"] as const;
 
@@ -93,7 +97,11 @@ function waitFor(ms: number, signal: AbortSignal) {
   });
 }
 
-async function qrRequest(path: string, payload: Record<string, unknown>, signal: AbortSignal) {
+function qrApiBase(environment: QrSessionRow["environment"]) {
+  return `https://${QR_API_HOSTS[environment]}`;
+}
+
+async function qrRequest(environment: QrSessionRow["environment"], path: string, payload: Record<string, unknown>, signal: AbortSignal) {
   const requestController = new AbortController();
   const timeout = setTimeout(() => requestController.abort(), QR_REQUEST_TIMEOUT_MS);
   const abortRequest = () => requestController.abort();
@@ -102,7 +110,7 @@ async function qrRequest(path: string, payload: Record<string, unknown>, signal:
     const body = JSON.stringify(payload);
     let response: Response;
     try {
-      response = await fetch(`${QR_API_BASE}${path}`, {
+      response = await fetch(`${qrApiBase(environment)}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body,
@@ -166,9 +174,9 @@ function assertQrSuccess(body: QrApiBody, traceId: string | null | undefined) {
   }
 }
 
-async function createBindTask(signal: AbortSignal): Promise<QrBindTask> {
+async function createBindTask(environment: QrSessionRow["environment"], signal: AbortSignal): Promise<QrBindTask> {
   const key = randomBytes(32).toString("base64");
-  const response = await qrRequest("/lite/create_bind_task", { key }, signal);
+  const response = await qrRequest(environment, "/lite/create_bind_task", { key }, signal);
   assertQrSuccess(response.body, response.traceId);
   const taskId = response.body.data?.task_id;
   if (typeof taskId !== "string" || !taskId.trim()) {
@@ -203,8 +211,8 @@ function decryptBindSecret(encryptedBase64: string, keyBase64: string) {
   }
 }
 
-async function pollBindResult(taskId: string, key: string, signal: AbortSignal) {
-  const response = await qrRequest("/lite/poll_bind_result", { task_id: taskId }, signal);
+async function pollBindResult(environment: QrSessionRow["environment"], taskId: string, key: string, signal: AbortSignal) {
+  const response = await qrRequest(environment, "/lite/poll_bind_result", { task_id: taskId }, signal);
   assertQrSuccess(response.body, response.traceId);
   const data = response.body.data;
   if (!data) throw new QrConnectorError("QQ 扫码服务响应缺少绑定结果", "QQ_BOT_QR_PROTOCOL_INVALID", undefined, undefined, response.traceId);
@@ -224,7 +232,7 @@ async function pollBindResult(taskId: string, key: string, signal: AbortSignal) 
 }
 
 function buildQrUrl(taskId: string) {
-  return `${QR_API_BASE}/qqbot/openclaw/connect.html?task_id=${encodeURIComponent(taskId)}&source=${encodeURIComponent(QR_CONNECT_SOURCE)}&_wv=2`;
+  return `${QR_CONNECT_BASE}/qqbot/openclaw/connect.html?task_id=${encodeURIComponent(taskId)}&source=${encodeURIComponent(QR_CONNECT_SOURCE)}&_wv=2`;
 }
 
 type QrConnectorCallbacks = {
@@ -234,16 +242,16 @@ type QrConnectorCallbacks = {
   onQrExpired: () => void;
 };
 
-function startQrConnector(callbacks: QrConnectorCallbacks, signal: AbortSignal) {
+function startQrConnector(environment: QrSessionRow["environment"], callbacks: QrConnectorCallbacks, signal: AbortSignal) {
   let stopped = false;
   const run = async () => {
     while (!signal.aborted) {
-      const task = await createBindTask(signal);
+      const task = await createBindTask(environment, signal);
       callbacks.onQrDisplayed(buildQrUrl(task.taskId));
       let pollFailureCount = 0;
       while (!signal.aborted) {
         try {
-          const result = await pollBindResult(task.taskId, task.key, signal);
+          const result = await pollBindResult(environment, task.taskId, task.key, signal);
           pollFailureCount = 0;
           if (result.status === 2 && result.credentials) {
             callbacks.onSuccess([result.credentials]);
@@ -482,8 +490,10 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
 }
 
 function startSdk(sessionId: string) {
+  const session = database().prepare("SELECT environment FROM qq_bot_qr_sessions WHERE id = ?").get(sessionId) as Pick<QrSessionRow, "environment"> | undefined;
+  if (!session) throw new Error("QQ_BOT_QR_SESSION_NOT_FOUND");
   const controller = new AbortController();
-  const stopSdk = startQrConnector({
+  const stopSdk = startQrConnector(session.environment, {
     onSuccess(credentials) {
       void importCredentials(sessionId, credentials);
     },
