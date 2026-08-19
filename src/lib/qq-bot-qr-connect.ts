@@ -355,6 +355,7 @@ function failSession(sessionId: string, errorCode: string) {
 function safeQrError(error: unknown) {
   if (error instanceof Error && error.message === "BOT_QUOTA_EXCEEDED") return "BOT_QUOTA_EXCEEDED";
   if (error instanceof Error && error.message === "QQ_BOT_PROFILE_INVALID") return "QQ_BOT_PROFILE_INVALID";
+  if (error instanceof Error && error.message === "QQ_BOT_QR_GATEWAY_NOT_ONLINE") return "QQ_BOT_QR_GATEWAY_NOT_ONLINE";
   if (error instanceof Error) {
     const errorCode = "code" in error && typeof error.code === "string" ? error.code : "";
     if (errorCode.startsWith("QQ_BOT_QR_")) return errorCode;
@@ -399,16 +400,13 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
       connectionMode: row.connection_mode,
     }, { allowProfileFallback: true });
     if (row.connection_mode === "websocket") {
-      // The QQ mobile page waits for the bot's online_state after SelectBindBot.
-      // Start the existing gateway manager immediately, but do not make QR
-      // credential persistence depend on a possibly slow Gateway request.
-      void gatewayManager.connect(bot.id).catch((error) => {
-        console.warn("[qq-bot-qr] gateway startup deferred after QR import", {
-          sessionId,
-          botId: bot.id,
-          error: error instanceof Error ? error.message.slice(0, 240) : String(error),
-        });
-      });
+      // QQ's mobile connect page waits for online_state after SelectBindBot.
+      // Do not complete the QR session until the Gateway has actually reached
+      // READY/online, otherwise the phone remains on "连接中" and fails.
+      const gateway = await gatewayManager.connect(bot.id);
+      if (!gateway.connected && !(await gatewayManager.waitForConnected(bot.id))) {
+        throw new Error("QQ_BOT_QR_GATEWAY_NOT_ONLINE");
+      }
     }
     if (terminalUpdate(sessionId, "completed", { botId: bot.id })) {
       writeAuditLog(user.id, "bot.qr_connect.complete", "bot", bot.id, { sessionId, appId: bot.appId });

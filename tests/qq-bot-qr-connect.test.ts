@@ -42,13 +42,14 @@ beforeEach(() => {
   qrTaskKey = "";
   qrPollResponse = { status: 1, bot_appid: "0", bot_encrypt_secret: "", user_openid: "" };
   vi.spyOn(gatewayManagerModule.gatewayManager, "connect").mockResolvedValue({
-    connected: false,
+    connected: true,
     reconnecting: false,
     owned: true,
     shardCount: 1,
     onlineShards: 0,
     lastAckAt: null,
   });
+  vi.spyOn(gatewayManagerModule.gatewayManager, "waitForConnected").mockResolvedValue(true);
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     if (url.hostname === "q.qq.com" && url.pathname === "/lite/create_bind_task") {
@@ -195,12 +196,20 @@ describe("QQ bot QR connect", () => {
     expect(bot.app_id).toBe("987654321");
   });
 
-  it("completes QR import without waiting for a slow Gateway startup", async () => {
-    vi.spyOn(gatewayManagerModule.gatewayManager, "connect").mockImplementation(() => new Promise(() => undefined));
+  it("fails QR import when the Gateway never becomes online", async () => {
+    vi.spyOn(gatewayManagerModule.gatewayManager, "connect").mockResolvedValue({
+      connected: false,
+      reconnecting: true,
+      owned: true,
+      shardCount: 1,
+      onlineShards: 0,
+      lastAckAt: null,
+    });
+    vi.spyOn(gatewayManagerModule.gatewayManager, "waitForConnected").mockResolvedValue(false);
     const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
-    qrPollResponse = { status: 2, bot_appid: "qr-slow-gateway-app", bot_encrypt_secret: "", user_openid: "" };
+    qrPollResponse = { status: 2, bot_appid: "qr-offline-gateway-app", bot_encrypt_secret: "", user_openid: "" };
     const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
-    await expect(waitForStatus(session.id, "completed", 500)).resolves.toMatchObject({ botId: expect.any(String) });
+    await expect(waitForStatus(session.id, "failed", 500)).resolves.toMatchObject({ errorCode: "QQ_BOT_QR_GATEWAY_NOT_ONLINE" });
   });
 
   it("accepts string completion states and retries QQ poll rate limits", async () => {

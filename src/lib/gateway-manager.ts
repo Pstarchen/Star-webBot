@@ -101,6 +101,17 @@ export class GatewayManager {
     };
   }
 
+  async waitForConnected(botId: string, timeoutMs = 60_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const current = this.status(botId);
+      if (current.connected) return true;
+      if (!current.owned && Date.now() + 2_000 < deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return this.status(botId).connected;
+  }
+
   async connect(botId: string, persist = true) {
     const pendingBootstrap = bootstrapTimers().get(botId);
     if (pendingBootstrap) clearTimeout(pendingBootstrap);

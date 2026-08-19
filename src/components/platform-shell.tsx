@@ -85,6 +85,7 @@ function qrErrorMessage(code: string) {
     QQ_BOT_QR_CANCELLED: "扫码已取消。",
     QQ_BOT_QR_MULTIPLE_RESULTS: "本次扫码返回了多个机器人，请重新扫码并只选择一个。",
     QQ_BOT_QR_CREDENTIALS_INVALID: "QQ 扫码服务未返回有效凭据。",
+    QQ_BOT_QR_GATEWAY_NOT_ONLINE: "机器人凭据已获取，但 QQ Gateway 未上线，请稍后重试。",
     QQ_BOT_QR_DECRYPT_FAILED: "QQ 扫码服务返回的凭据无法解密，请重新生成二维码。",
     QQ_BOT_QR_PROTOCOL_INVALID: "QQ 扫码服务返回了无法识别的结果，请稍后重试。",
     QQ_BOT_QR_NETWORK_FAILED: "服务器连接 QQ 扫码服务失败，请稍后重试。",
