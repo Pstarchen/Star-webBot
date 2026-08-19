@@ -173,6 +173,28 @@ describe("QQ bot QR connect", () => {
     expect(bot.name).toContain("QQ 机器人");
   });
 
+  it("normalizes a numeric bot_appid returned by QQ", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "q.qq.com" && url.pathname === "/lite/create_bind_task") {
+        const request = input instanceof Request ? await input.clone().json() : JSON.parse(String(init?.body || "{}"));
+        qrTaskKey = typeof request.key === "string" ? request.key : "";
+        return Response.json({ retcode: 0, msg: "success", data: { task_id: "qr-numeric-app-task" } });
+      }
+      if (url.hostname === "q.qq.com" && url.pathname === "/lite/poll_bind_result") {
+        return Response.json({ retcode: 0, msg: "success", data: { status: 2, bot_appid: 987654321, bot_encrypt_secret: encryptedSecret("qr-numeric-app-secret", qrTaskKey) } });
+      }
+      if (url.pathname === "/app/getAppAccessToken") return Response.json({ access_token: "access-token", expires_in: 3600 });
+      if (url.pathname === "/users/@me") return Response.json({ id: "qr-numeric-bot", username: "数字 AppID 机器人" });
+      throw new Error(`Unexpected QQ URL: ${url}`);
+    });
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "webhook" });
+    const completed = await waitForStatus(session.id, "completed", 500);
+    const bot = databaseModule.getDatabase().prepare("SELECT app_id FROM bots WHERE id = ?").get(completed.botId) as { app_id: string };
+    expect(bot.app_id).toBe("987654321");
+  });
+
   it("accepts string completion states and retries QQ poll rate limits", async () => {
     let polls = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {

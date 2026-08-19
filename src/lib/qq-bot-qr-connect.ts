@@ -208,7 +208,11 @@ async function pollBindResult(taskId: string, key: string, signal: AbortSignal) 
   const status = bindStatus(data.status);
   if (status === null) throw new QrConnectorError("QQ 扫码服务返回未知绑定状态", "QQ_BOT_QR_PROTOCOL_INVALID", undefined, undefined, response.traceId);
   if (status === 2) {
-    const appId = typeof data.bot_appid === "string" ? data.bot_appid.trim() : "";
+    // QQ has returned bot_appid as both a JSON string and a number. Match the
+    // official connector, which normalizes the value before validating it.
+    const appId = typeof data.bot_appid === "string" || typeof data.bot_appid === "number"
+      ? String(data.bot_appid).trim()
+      : "";
     const encryptedSecret = typeof data.bot_encrypt_secret === "string" ? data.bot_encrypt_secret : "";
     if (!appId || !encryptedSecret) throw new QrConnectorError("QQ 扫码服务未返回完整凭据", "QQ_BOT_QR_CREDENTIALS_INVALID", undefined, undefined, response.traceId);
     return { status, credentials: { appId, appSecret: decryptBindSecret(encryptedSecret, key) } satisfies QrConnectCredentials };
