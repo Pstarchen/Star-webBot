@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import Image from "next/image";
+import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Select from "@radix-ui/react-select";
@@ -21,7 +20,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
-  QrCode,
   Settings2,
   ShieldCheck,
   Users,
@@ -76,46 +74,12 @@ const buildNav: NavItem[] = [
   { key: "developer", label: "开发者中心", icon: Code2 },
 ];
 
-function qrErrorMessage(code: string) {
-  const messages: Record<string, string> = {
-    BOT_QUOTA_EXCEEDED: "机器人数量已达到上限，请联系管理员增加配额。",
-    BOT_DUPLICATE: "该 QQ 机器人已经添加。",
-    QQ_BOT_PROFILE_INVALID: "QQ 未返回有效的机器人资料，请检查机器人权限。",
-    QQ_BOT_QR_EXPIRED: "二维码已过期，请重新生成。",
-    QQ_BOT_QR_CANCELLED: "扫码已取消。",
-    QQ_BOT_QR_MULTIPLE_RESULTS: "本次扫码返回了多个机器人，请重新扫码并只选择一个。",
-    QQ_BOT_QR_CREDENTIALS_INVALID: "QQ 扫码服务未返回有效凭据。",
-    QQ_BOT_QR_GATEWAY_NOT_ONLINE: "机器人凭据已获取，但 QQ Gateway 未上线，请稍后重试。",
-    QQ_BOT_QR_DECRYPT_FAILED: "QQ 扫码服务返回的凭据无法解密，请重新生成二维码。",
-    QQ_BOT_QR_PROTOCOL_INVALID: "QQ 扫码服务返回了无法识别的结果，请稍后重试。",
-    QQ_BOT_QR_NETWORK_FAILED: "服务器连接 QQ 扫码服务失败，请稍后重试。",
-    QQ_BOT_QR_TIMEOUT: "QQ 扫码服务响应超时，请稍后重试。",
-    QQ_BOT_QR_POLL_FAILED: "QQ 扫码服务轮询失败，请重新生成二维码。",
-    QQ_BOT_QR_CONNECT_FAILED: "QQ 扫码连接未完成，请重新生成二维码后再试。",
-    QQ_BOT_QR_IMPORT_FAILED: "服务器验证 QQ 凭据时发生异常，请重新生成二维码后再试。",
-    QQ_BOT_API_100001: "QQ 开放平台请求过于频繁，请稍后再扫码。",
-    QQ_BOT_API_100007: "QQ 返回的机器人已失效或不存在，请在 QQ 开放平台确认机器人状态后重新扫码。",
-    QQ_BOT_API_100016: "QQ 返回的机器人凭据无效，请确认扫码选择的是当前可用的 QQ 机器人。",
-    QQ_BOT_API_10004: "QQ 开放平台未找到该机器人，请确认机器人仍处于可用状态。",
-    QQ_BOT_API_40011034: "QQ 机器人资料尚未同步完成，请稍后检查机器人连接状态。",
-    QQ_BOT_API_HTTP_401: "QQ 开放平台拒绝了机器人凭据，请重新扫码。",
-    QQ_BOT_API_HTTP_404: "QQ 开放平台未找到该机器人，请确认机器人状态。",
-    QQ_BOT_API_HTTP_429: "QQ 开放平台暂时限流，请稍后重新扫码。",
-    QQ_BOT_API_HTTP_500: "QQ 开放平台暂时不可用，请稍后重新扫码。",
-    QQ_BOT_API_HTTP_504: "QQ 开放平台响应超时，请稍后重新扫码。",
-  };
-  if (code.startsWith("QQ_BOT_QR_HTTP_")) return "QQ 扫码服务暂时不可用，请稍后重新生成二维码。";
-  if (code.startsWith("QQ_BOT_QR_API_")) return `QQ 扫码服务返回错误（${code.slice("QQ_BOT_QR_API_".length)}），请稍后重试。`;
-  return messages[code] || "扫码绑定失败，请稍后重试。";
-}
-
 function AddBotDialog({
   open,
   onOpenChange,
   used,
   quota,
   onCreate,
-  onQrCompleted,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -127,99 +91,14 @@ function AddBotDialog({
     environment: "production" | "sandbox";
     connectionMode: "websocket" | "webhook";
   }) => Promise<Bot>;
-  onQrCompleted: () => Promise<void>;
 }) {
   const [appId, setAppId] = useState("");
   const [secret, setSecret] = useState("");
   const [environment, setEnvironment] = useState<"production" | "sandbox">("production");
-  const [connectionMode, setConnectionMode] = useState<"websocket" | "webhook">("websocket");
+  const [connectionMode, setConnectionMode] = useState<"websocket" | "webhook">("webhook");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [mode, setMode] = useState<"manual" | "qr">("qr");
-  const [qrSessionId, setQrSessionId] = useState("");
-  const [qrStatus, setQrStatus] = useState<"pending" | "scanning" | "completed" | "expired" | "cancelled" | "failed">("pending");
-  const [qrRevision, setQrRevision] = useState(0);
-  const [qrError, setQrError] = useState("");
-  const [qrStarting, setQrStarting] = useState(false);
   const quotaReached = used >= quota;
-
-  const resetQr = useCallback(() => {
-    setQrSessionId("");
-    setQrStatus("pending");
-    setQrRevision(0);
-    setQrError("");
-  }, []);
-
-  const closeDialog = useCallback((nextOpen: boolean) => {
-    if (!nextOpen && qrSessionId && (qrStatus === "pending" || qrStatus === "scanning")) {
-      void fetch(`/api/bot-qr-sessions/${qrSessionId}/cancel`, { method: "POST" });
-    }
-    if (!nextOpen) {
-      resetQr();
-      setMode("qr");
-      setError("");
-    }
-    onOpenChange(nextOpen);
-  }, [onOpenChange, qrSessionId, qrStatus, resetQr]);
-
-  async function startQr() {
-    if (quotaReached) return;
-    setQrStarting(true);
-    setQrError("");
-    try {
-      const response = await fetch("/api/bot-qr-sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ environment, connectionMode }),
-      });
-      const body = await response.json().catch(() => ({})) as { session?: { id: string; status: typeof qrStatus; qrRevision: number }; message?: string };
-      if (!response.ok || !body.session) throw new Error(body.message || "扫码会话创建失败");
-      setQrSessionId(body.session.id);
-      setQrStatus(body.session.status);
-      setQrRevision(body.session.qrRevision);
-    } catch (startError) {
-      setQrError(startError instanceof Error ? startError.message : "扫码会话创建失败");
-    } finally {
-      setQrStarting(false);
-    }
-  }
-
-  async function cancelQr() {
-    if (!qrSessionId) return;
-    await fetch(`/api/bot-qr-sessions/${qrSessionId}/cancel`, { method: "POST" }).catch(() => undefined);
-    setQrStatus("cancelled");
-  }
-
-  function switchMode(nextMode: "manual" | "qr") {
-    if (nextMode === "manual" && qrSessionId && (qrStatus === "pending" || qrStatus === "scanning")) void cancelQr();
-    setMode(nextMode);
-  }
-
-  useEffect(() => {
-    if (!qrSessionId || ["completed", "expired", "cancelled", "failed"].includes(qrStatus)) return;
-    let stopped = false;
-    async function poll() {
-      try {
-        const response = await fetch(`/api/bot-qr-sessions/${qrSessionId}`, { cache: "no-store" });
-        const body = await response.json().catch(() => ({})) as { session?: { status: typeof qrStatus; qrRevision: number; botId?: string | null; errorCode?: string | null } };
-        if (!response.ok || !body.session) throw new Error("扫码会话已失效");
-        if (stopped) return;
-        setQrStatus(body.session.status);
-        setQrRevision(body.session.qrRevision);
-        if (body.session.errorCode) setQrError(qrErrorMessage(body.session.errorCode));
-        if (body.session.status === "completed") {
-          await onQrCompleted();
-          if (!stopped) closeDialog(false);
-          return;
-        }
-        if (!stopped && !["expired", "cancelled", "failed"].includes(body.session.status)) window.setTimeout(() => void poll(), 1_500);
-      } catch (pollError) {
-        if (!stopped) setQrError(pollError instanceof Error ? pollError.message : "扫码状态查询失败");
-      }
-    }
-    void poll();
-    return () => { stopped = true; };
-  }, [closeDialog, onQrCompleted, qrSessionId, qrStatus]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -236,8 +115,8 @@ function AddBotDialog({
       setAppId("");
       setSecret("");
       setEnvironment("production");
-      setConnectionMode("websocket");
-      closeDialog(false);
+      setConnectionMode("webhook");
+      onOpenChange(false);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "机器人添加失败");
     } finally {
@@ -246,7 +125,7 @@ function AddBotDialog({
   }
 
   return (
-    <Dialog.Root open={open} onOpenChange={closeDialog}>
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
         <Dialog.Content className="modal-panel fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-32px)] w-[calc(100%-32px)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border bg-card p-5 shadow-2xl outline-none sm:p-6">
@@ -254,7 +133,7 @@ function AddBotDialog({
             <div className="min-w-0">
               <Dialog.Title className="text-lg font-semibold text-foreground">添加 QQ 机器人</Dialog.Title>
               <Dialog.Description className="mt-1.5 text-sm leading-6 text-muted-foreground">
-                可使用手机 QQ 扫码绑定，也可以填写 QQ 开放平台应用凭据。
+                填写 QQ 开放平台的应用凭据，验证成功后自动读取机器人名称并加密保存凭据。
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>
@@ -279,43 +158,7 @@ function AddBotDialog({
               机器人数量已达到上限，请联系管理员增加配额。
             </div>
           ) : (
-            <div className="mt-5 space-y-4">
-              <div className="grid grid-cols-2 gap-1 rounded-md bg-muted p-1">
-                <Button type="button" size="sm" variant={mode === "qr" ? "default" : "ghost"} onClick={() => switchMode("qr")}><QrCode size={14} />扫码添加</Button>
-                <Button type="button" size="sm" variant={mode === "manual" ? "default" : "ghost"} onClick={() => switchMode("manual")}><KeyRound size={14} />手动填写</Button>
-              </div>
-              {mode === "qr" ? (
-                <div className="space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <label className="block">
-                      <span className="field-label">使用阶段</span>
-                      <Select.Root value={environment} onValueChange={(value) => setEnvironment(value as "production" | "sandbox")}>
-                        <Select.Trigger className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"><Select.Value /><Select.Icon><ChevronDown size={14} className="text-muted-foreground" /></Select.Icon></Select.Trigger>
-                        <Select.Portal><Select.Content position="popper" sideOffset={6} className="z-[60] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg"><Select.Viewport>{([["sandbox", "测试使用"], ["production", "正式使用"]] as const).map(([value, label]) => <Select.Item key={value} value={value} className="relative flex cursor-default select-none items-center rounded-sm px-2 py-2 pr-8 text-sm outline-none data-[highlighted]:bg-accent"><Select.ItemText>{label}</Select.ItemText><Select.ItemIndicator className="absolute right-2"><Check size={14} /></Select.ItemIndicator></Select.Item>)}</Select.Viewport></Select.Content></Select.Portal>
-                      </Select.Root>
-                    </label>
-                    <label className="block">
-                      <span className="field-label">事件接入方式</span>
-                      <Select.Root value={connectionMode} onValueChange={(value) => setConnectionMode(value as "websocket" | "webhook")}>
-                        <Select.Trigger className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"><Select.Value /><Select.Icon><ChevronDown size={14} className="text-muted-foreground" /></Select.Icon></Select.Trigger>
-                        <Select.Portal><Select.Content position="popper" sideOffset={6} className="z-[60] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg"><Select.Viewport>{([["websocket", "WebSocket · 平台托管"], ["webhook", "Webhook · QQ 官方推送"]] as const).map(([value, label]) => <Select.Item key={value} value={value} className="relative flex cursor-default select-none items-center rounded-sm px-2 py-2 pr-8 text-sm outline-none data-[highlighted]:bg-accent"><Select.ItemText>{label}</Select.ItemText><Select.ItemIndicator className="absolute right-2"><Check size={14} /></Select.ItemIndicator></Select.Item>)}</Select.Viewport></Select.Content></Select.Portal>
-                      </Select.Root>
-                    </label>
-                  </div>
-                  <div className="rounded-md border bg-muted/30 p-4 text-xs leading-5 text-muted-foreground">使用手机 QQ 扫描二维码并选择要绑定的 QQ 机器人。扫码成功后，机器人凭据只在服务端验证并加密保存。</div>
-                  {qrSessionId && (qrStatus === "pending" || qrStatus === "scanning") && qrRevision > 0 ? (
-                    <div className="flex justify-center rounded-md border bg-white p-4"><Image key={qrRevision} src={`/api/bot-qr-sessions/${qrSessionId}/qr?revision=${qrRevision}`} alt="QQ 机器人绑定二维码" width={256} height={256} className="h-64 w-64" unoptimized /></div>
-                  ) : (
-                    <div className="grid h-72 place-items-center rounded-md border border-dashed bg-muted/20 text-center text-xs text-muted-foreground">{qrSessionId ? "正在生成二维码..." : "点击下方按钮生成二维码"}</div>
-                  )}
-                  {qrSessionId && (qrStatus === "pending" || qrStatus === "scanning") && <div className="text-center text-xs text-muted-foreground">{qrStatus === "scanning" ? "等待手机 QQ 确认绑定..." : "正在连接 QQ 扫码服务..."}</div>}
-                  {qrError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{qrError}</div>}
-                  <div className="flex justify-end gap-2 pt-1">
-                    {qrSessionId && (qrStatus === "pending" || qrStatus === "scanning") ? <Button type="button" variant="outline" onClick={() => void cancelQr()}>取消扫码</Button> : <Button type="button" onClick={() => void startQr()} disabled={qrStarting}><QrCode size={15} />{qrStarting ? "正在生成..." : "生成扫码二维码"}</Button>}
-                  </div>
-                </div>
-              ) : (
-            <form onSubmit={submit} className="space-y-4">
+            <form onSubmit={submit} className="mt-5 space-y-4">
               <label className="block">
                 <span className="field-label">AppID</span>
                 <Input value={appId} onChange={(event) => setAppId(event.target.value)} className="mono-data text-xs" placeholder="QQ 开放平台 AppID" required />
@@ -379,8 +222,6 @@ function AddBotDialog({
                 </Button>
               </div>
             </form>
-              )}
-            </div>
           )}
         </Dialog.Content>
       </Dialog.Portal>
@@ -701,11 +542,6 @@ export function PlatformShell({
           onOpenChange={setAddBotOpen}
           used={bots.length}
           quota={effectiveQuota}
-          onQrCompleted={async () => {
-            const response = await fetch("/api/bots", { cache: "no-store" });
-            if (response.ok) setBots(((await response.json()) as { bots: Bot[] }).bots);
-            setActiveView("bots");
-          }}
           onCreate={async (input) => {
             const response = await fetch("/api/bots", {
               method: "POST",

@@ -11,7 +11,7 @@
 - 管理员可维护月付、季付、年付价格，并配置易支付兼容网关、人工审核或开发沙箱；支付成功后自动发放并顺延会员有效期。
 - 管理员可分配套餐、覆盖单用户机器人配额、调整角色并停用账号。
 - 添加机器人时真实验证 AppID/Client Secret，并通过 `GET /users/@me` 自动读取 QQ 官方机器人名称；Secret 使用 AES-256-GCM 加密。
-- 机器人默认使用 WebSocket，也可选择 QQ 官方 Webhook 接入。WebSocket 按官方建议分片数建立完整连接组，支持服务端 Intents 策略、Identify 频控、Heartbeat、ACK 超时、Resume、抖动退避和重启自动恢复。
+- 机器人默认使用 QQ 官方 Webhook 接入，也可选择 WebSocket。WebSocket 按官方建议分片数建立完整连接组，支持服务端 Intents 策略、Identify 频控、Heartbeat、ACK 超时、Resume、抖动退避和重启自动恢复。
 - SQLite 或 MySQL 租约保证同一数据库中的同一机器人只有一个 Gateway 所有者，实例异常后可自动接管。
 - Gateway 事件持久化到所选数据库，并按会员套餐自动清理过期记录。
 - 支持单聊/群聊消息调试、JSON REST 请求台、原始 multipart 代理和 200MB 富媒体分片上传。
@@ -95,11 +95,11 @@ QQ_LOGIN_REDIRECT_URI=http://localhost:3000/api/auth/qq/callback
 
 未配置时，登录页会明确显示“QQ 登录未配置”，不会伪装成可用功能。
 
-## QQ 机器人扫码添加
+## QQ 机器人添加
 
-进入控制台的“机器人 -> 添加机器人”，默认使用 QQ 官方扫码连接流程。点击生成二维码后，用手机 QQ 扫描并选择要绑定的 QQ 机器人；扫码成功后平台会在服务端验证机器人资料，并使用 `CREDENTIAL_ENCRYPTION_KEY` 加密保存凭据。二维码会自动刷新，关闭弹窗或超过 10 分钟未完成时会取消本次会话。
+进入控制台的“机器人 -> 添加机器人”，填写 QQ 开放平台机器人的 AppID 和 Client Secret，并选择正式/沙箱环境及 Webhook/WebSocket 接入方式。平台会在服务端验证机器人资料，并使用 `CREDENTIAL_ENCRYPTION_KEY` 加密保存凭据。
 
-该流程使用 QQ 官方的 [`@tencent-connect/qqbot-connector`](https://www.npmjs.com/package/@tencent-connect/qqbot-connector) SDK。它绑定的是 QQ 开放平台机器人，不是登录页中的 QQ 互联用户账号；机器人仍需按 QQ 开放平台的沙箱、权限和发布规则配置。
+这里填写的是 QQ 开放平台机器人凭据，不是登录页中的 QQ 互联用户账号；机器人仍需按 QQ 开放平台的沙箱、权限和发布规则配置。
 
 ## 会员支付
 
