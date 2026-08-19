@@ -600,7 +600,7 @@ await sdk.qq.sendGroup(groupOpenid, {
 
 `file_type`：`1` 图片、`2` 视频、`3` 语音、`4` 文件。单聊使用 `/v2/users/{user_openid}/files`，群聊使用 `/v2/groups/{group_openid}/files`；两种场景的 `file_info` 不能混用。
 
-需要鉴权的媒体地址不能直接交给 QQ 下载。托管插件可以调用 `sdk.qq.uploadMediaFromUrl(targetType, targetOpenid, fileType, url, headers)`，由 StarBot 服务端带请求头下载到临时文件，再使用同一套 QQ 分片上传流程；请求头不会发送给 QQ，也不会进入插件日志。
+需要鉴权的媒体地址不能直接交给 QQ 下载。托管插件可以调用 `sdk.qq.uploadMediaFromUrl(targetType, targetOpenid, fileType, url, headers)`，由 StarBot 服务端带请求头下载到临时文件，再使用同一套 QQ 分片上传流程；请求头不会发送给 QQ，也不会进入插件日志。图片会在临时目录中解码，并根据是否有透明通道转换为 PNG 或 JPEG 后上传；视频、SILK 语音和普通文件保持原样。转换失败会返回 `MEDIA_IMAGE_CONVERSION_FAILED`。
 
 频道消息可以使用官方频道发送接口的 `image` 公网 URL 字段。QQ 当前富媒体上传文档只列出单聊和群聊 `/files`，没有频道 `/files` 端点，因此托管插件不能假设频道视频/音频可按 `msg_type: 7` 上传；可退化为发送公网链接或等待官方开放端点。
 

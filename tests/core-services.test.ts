@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import sharp from "sharp";
 
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "starbot-test-"));
 const databasePath = path.join(temporaryDirectory, "starbot.db");
@@ -926,6 +927,73 @@ describe("request security", () => {
     form.set("file", new File([Buffer.from("not an image")], "renamed.png", { type: "image/png" }));
     await expect(qqMediaModule.parseMediaUploadRequest(new Request("http://localhost/media", { method: "POST", body: form }))).rejects.toThrow("MEDIA_IMAGE_CONTENT_INVALID");
     expect(qqMediaModule.mediaUploadInputErrorMessage("MEDIA_IMAGE_CONTENT_INVALID")).toBe("所选图片的实际内容不是有效的 PNG 或 JPEG");
+  });
+
+  it.each([
+    { label: "opaque", channels: 3, output: "jpg" as const },
+    { label: "transparent", channels: 4, output: "png" as const },
+  ] as const)("converts remote $label images to QQ-compatible $output", async ({ channels, output }) => {
+    const source = await sharp({
+      create: {
+        width: 2,
+        height: 2,
+        channels,
+        background: channels === 4 ? { r: 255, g: 80, b: 40, alpha: 0.5 } : { r: 255, g: 80, b: 40 },
+      },
+    }).webp().toBuffer();
+    const expected = output === "png"
+      ? await sharp(source).png({ compressionLevel: 9 }).toBuffer()
+      : await sharp(source).jpeg({ quality: 90 }).toBuffer();
+    const tempPrefix = "starbot-media-";
+    const before = new Set(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith(tempPrefix)));
+    const requests: Array<{ path: string; payload?: unknown }> = [];
+    const uploadedParts: Buffer[] = [];
+    const client = {
+      request: async (requestPath: string, _method: string, payload?: unknown) => {
+        requests.push({ path: requestPath, payload });
+        if (requestPath.endsWith("/upload_prepare")) return {
+          body: {
+            upload_id: "upload-image-normalize",
+            block_size: String(expected.length),
+            parts: [{ index: 0, presigned_url: "https://upload.example/normalized", block_size: String(expected.length) }],
+            upload_config: { concurrency: 1, retry_timeout: 5, retry_delay: 1 },
+          },
+          traceId: null,
+        };
+        if (requestPath.endsWith("/files")) return { body: { file_info: "normalized-file-info" }, traceId: "trace-normalized" };
+        return { body: {}, traceId: null };
+      },
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(init?.method || "GET").toUpperCase() === "PUT") {
+        for await (const chunk of init?.body as unknown as NodeJS.ReadableStream) uploadedParts.push(Buffer.from(chunk));
+        return new Response(null, { status: 200 });
+      }
+      return new Response(source, { status: 200, headers: { "Content-Type": "image/webp", "Content-Length": String(source.length) } });
+    }) as typeof fetch;
+    try {
+      const result = await qqMediaModule.uploadQQMediaFromUrl(client as unknown as import("@/lib/qq-api").QQBotApiClient, {
+        url: "https://93.184.216.34/image.webp",
+        fileType: 1,
+        targetType: "group",
+        targetOpenid: "group-image-normalize",
+        srvSendMsg: false,
+      }, AbortSignal.timeout(10_000));
+      expect(result).toMatchObject({ body: { file_info: "normalized-file-info" }, traceId: "trace-normalized" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(Buffer.concat(uploadedParts)).toEqual(expected);
+    const preparePayload = requests.find((entry) => entry.path.endsWith("/upload_prepare"))?.payload as { file_name: string; file_size: string; md5: string; sha1: string };
+    expect(preparePayload).toMatchObject({
+      file_name: `remote.${output}`,
+      file_size: String(expected.length),
+      md5: createHash("md5").update(expected).digest("hex"),
+      sha1: createHash("sha1").update(expected).digest("hex"),
+    });
+    const after = new Set(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith(tempPrefix)));
+    expect(after).toEqual(before);
   });
 
   it("spools raw multipart bodies with SHA256 and always supports cleanup", async () => {

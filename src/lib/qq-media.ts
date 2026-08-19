@@ -2,13 +2,14 @@ import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { lookup as lookupDns } from "node:dns/promises";
 import { createReadStream, createWriteStream } from "node:fs";
-import { open, rm } from "node:fs/promises";
+import { open, readFile, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import Busboy from "busboy";
+import sharp from "sharp";
 import { isQQApiError, type QQApiError, type QQBotApiClient } from "@/lib/qq-api";
 
 export const QQ_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
@@ -23,6 +24,7 @@ export type QQMediaUploadStage = "prepare" | "part-upload" | "part-finish" | "me
 
 export type ParsedMediaUpload = {
   tempPath: string;
+  cleanupPaths?: string[];
   fileName: string;
   fileSize: number;
   fileType: QQMediaFileType;
@@ -193,6 +195,7 @@ export function mediaUploadInputErrorMessage(code: string) {
     MEDIA_VIDEO_FORMAT_INVALID: "视频仅支持 MP4 文件",
     MEDIA_AUDIO_FORMAT_INVALID: "语音仅支持 SILK 文件",
     MEDIA_IMAGE_CONTENT_INVALID: "所选图片的实际内容不是有效的 PNG 或 JPEG",
+    MEDIA_IMAGE_CONVERSION_FAILED: "图片无法解码或转换为 PNG/JPEG",
     MEDIA_VIDEO_CONTENT_INVALID: "所选视频的实际内容不是 MP4 容器格式",
     MEDIA_AUDIO_CONTENT_INVALID: "所选语音的实际内容不是 SILK 格式",
   };
@@ -458,49 +461,93 @@ function remoteFileName(url: URL, contentType: string, fileType: QQMediaFileType
   return safeFileName(`remote${selected}`);
 }
 
-async function downloadRemoteMedia(urlValue: string, input: RemoteMediaUploadRequest, signal: AbortSignal) {
-  const { response, url } = await fetchRemoteMedia(urlValue, input.headers, signal);
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (contentLength > QQ_MEDIA_MAX_BYTES) throw new Error("MEDIA_FILE_TOO_LARGE");
-  const fileName = remoteFileName(url, response.headers.get("content-type") || "", input.fileType);
-  const tempPath = path.join(os.tmpdir(), `starbot-media-${randomUUID()}.remote`);
+async function normalizeRemoteImage(tempPath: string) {
+  const outputPath = path.join(os.tmpdir(), `starbot-media-${randomUUID()}.converted`);
+  try {
+    const source = await readFile(tempPath);
+    const metadata = await sharp(source, { animated: false }).metadata();
+    const hasAlpha = metadata.hasAlpha === true;
+    if (hasAlpha) {
+      await sharp(source, { animated: false }).png({ compressionLevel: 9 }).toFile(outputPath);
+      return { tempPath: outputPath, fileName: "remote.png" };
+    }
+    await sharp(source, { animated: false }).jpeg({ quality: 90 }).toFile(outputPath);
+    return { tempPath: outputPath, fileName: "remote.jpg" };
+  } catch (error) {
+    await rm(outputPath, { force: true }).catch(() => undefined);
+    throw Object.assign(new Error("MEDIA_IMAGE_CONVERSION_FAILED"), { cause: error });
+  }
+}
+
+async function hashMediaFile(tempPath: string) {
   const md5 = createHash("md5");
   const sha1 = createHash("sha1");
   const md5First10m = createHash("md5");
   let fileSize = 0;
   let firstBytesRemaining = QQ_MEDIA_PREFIX_BYTES;
+  for await (const chunk of createReadStream(tempPath)) {
+    const value = Buffer.from(chunk as Buffer);
+    fileSize += value.length;
+    md5.update(value);
+    sha1.update(value);
+    if (firstBytesRemaining > 0) {
+      const prefix = value.subarray(0, Math.min(firstBytesRemaining, value.length));
+      md5First10m.update(prefix);
+      firstBytesRemaining -= prefix.length;
+    }
+  }
+  if (!fileSize) throw new Error("MEDIA_FILE_EMPTY");
+  return {
+    fileSize,
+    md5: md5.digest("hex"),
+    sha1: sha1.digest("hex"),
+    md5First10m: md5First10m.digest("hex"),
+  };
+}
+
+async function downloadRemoteMedia(urlValue: string, input: RemoteMediaUploadRequest, signal: AbortSignal) {
+  const { response, url } = await fetchRemoteMedia(urlValue, input.headers, signal);
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > QQ_MEDIA_MAX_BYTES) throw new Error("MEDIA_FILE_TOO_LARGE");
+  const fileName = remoteFileName(url, response.headers.get("content-type") || "", input.fileType);
+  const downloadedPath = path.join(os.tmpdir(), `starbot-media-${randomUUID()}.remote`);
+  let tempPath = downloadedPath;
+  let normalizedFileName = fileName;
+  let fileSize = 0;
   try {
-    const hashingStream = new Transform({
+    const countingStream = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         fileSize += chunk.length;
         if (fileSize > QQ_MEDIA_MAX_BYTES) return callback(new Error("MEDIA_FILE_TOO_LARGE"));
-        md5.update(chunk);
-        sha1.update(chunk);
-        if (firstBytesRemaining > 0) {
-          const prefix = chunk.subarray(0, Math.min(firstBytesRemaining, chunk.length));
-          md5First10m.update(prefix);
-          firstBytesRemaining -= prefix.length;
-        }
         callback(null, chunk);
       },
     });
-    await pipeline(Readable.fromWeb(response.body as never), hashingStream, createWriteStream(tempPath, { flags: "wx" }));
+    await pipeline(Readable.fromWeb(response.body as never), countingStream, createWriteStream(downloadedPath, { flags: "wx" }));
     if (!fileSize) throw new Error("MEDIA_FILE_EMPTY");
-    await assertFileTypeMatchesContent(input.fileType, tempPath);
+    if (input.fileType === 1) {
+      const normalized = await normalizeRemoteImage(downloadedPath);
+      tempPath = normalized.tempPath;
+      normalizedFileName = normalized.fileName;
+    }
+    const hashes = await hashMediaFile(tempPath);
+    if (hashes.fileSize > QQ_MEDIA_MAX_BYTES) throw new Error("MEDIA_FILE_TOO_LARGE");
+    if (input.fileType !== 1) await assertFileTypeMatchesContent(input.fileType, tempPath);
     return {
       tempPath,
-      fileName,
-      fileSize,
+      ...(tempPath !== downloadedPath ? { cleanupPaths: [downloadedPath] } : {}),
+      fileName: normalizedFileName,
+      fileSize: hashes.fileSize,
       fileType: input.fileType,
       targetType: input.targetType,
       targetOpenid: input.targetOpenid,
       srvSendMsg: input.srvSendMsg,
-      md5: md5.digest("hex"),
-      sha1: sha1.digest("hex"),
-      md5First10m: md5First10m.digest("hex"),
+      md5: hashes.md5,
+      sha1: hashes.sha1,
+      md5First10m: hashes.md5First10m,
     } satisfies ParsedMediaUpload;
   } catch (error) {
-    await rm(tempPath, { force: true }).catch(() => undefined);
+    await rm(downloadedPath, { force: true }).catch(() => undefined);
+    if (tempPath !== downloadedPath) await rm(tempPath, { force: true }).catch(() => undefined);
     throw error;
   }
 }
@@ -512,5 +559,7 @@ export async function uploadQQMediaFromUrl(client: QQBotApiClient, input: Remote
 }
 
 export async function removeParsedMediaUpload(upload: ParsedMediaUpload | null) {
-  if (upload?.tempPath) await rm(upload.tempPath, { force: true }).catch(() => undefined);
+  for (const filePath of [upload?.tempPath, ...(upload?.cleanupPaths || [])]) {
+    if (filePath) await rm(filePath, { force: true }).catch(() => undefined);
+  }
 }
