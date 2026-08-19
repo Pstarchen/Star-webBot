@@ -399,17 +399,16 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
       connectionMode: row.connection_mode,
     }, { allowProfileFallback: true });
     if (row.connection_mode === "websocket") {
-      try {
-        // The QQ mobile page waits for the bot's online_state after SelectBindBot.
-        // Start the existing gateway manager immediately so that the handoff can finish.
-        await gatewayManager.connect(bot.id);
-      } catch (error) {
+      // The QQ mobile page waits for the bot's online_state after SelectBindBot.
+      // Start the existing gateway manager immediately, but do not make QR
+      // credential persistence depend on a possibly slow Gateway request.
+      void gatewayManager.connect(bot.id).catch((error) => {
         console.warn("[qq-bot-qr] gateway startup deferred after QR import", {
           sessionId,
           botId: bot.id,
           error: error instanceof Error ? error.message.slice(0, 240) : String(error),
         });
-      }
+      });
     }
     if (terminalUpdate(sessionId, "completed", { botId: bot.id })) {
       writeAuditLog(user.id, "bot.qr_connect.complete", "bot", bot.id, { sessionId, appId: bot.appId });

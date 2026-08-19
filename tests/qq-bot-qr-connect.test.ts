@@ -59,7 +59,7 @@ beforeEach(() => {
     if (url.hostname === "q.qq.com" && url.pathname === "/lite/poll_bind_result") {
       const response = { ...qrPollResponse };
       if (response.status === 2 && !response.bot_encrypt_secret) {
-        response.bot_appid = "qr-app-id";
+        response.bot_appid ||= "qr-app-id";
         response.bot_encrypt_secret = encryptedSecret("qr-app-secret", qrTaskKey);
       }
       return Response.json({ retcode: 0, msg: "success", data: response });
@@ -193,6 +193,14 @@ describe("QQ bot QR connect", () => {
     const completed = await waitForStatus(session.id, "completed", 500);
     const bot = databaseModule.getDatabase().prepare("SELECT app_id FROM bots WHERE id = ?").get(completed.botId) as { app_id: string };
     expect(bot.app_id).toBe("987654321");
+  });
+
+  it("completes QR import without waiting for a slow Gateway startup", async () => {
+    vi.spyOn(gatewayManagerModule.gatewayManager, "connect").mockImplementation(() => new Promise(() => undefined));
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    qrPollResponse = { status: 2, bot_appid: "qr-slow-gateway-app", bot_encrypt_secret: "", user_openid: "" };
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    await expect(waitForStatus(session.id, "completed", 500)).resolves.toMatchObject({ botId: expect.any(String) });
   });
 
   it("accepts string completion states and retries QQ poll rate limits", async () => {
