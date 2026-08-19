@@ -639,6 +639,26 @@ describe("request security", () => {
     }
   });
 
+  it("does not call the fallback Gateway when QQ rate limits the sharded endpoint", async () => {
+    const originalFetch = globalThis.fetch;
+    const requestedPaths: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/app/getAppAccessToken") return Response.json({ access_token: "limited-token", expires_in: 7200 });
+      requestedPaths.push(url.pathname);
+      if (url.pathname === "/gateway/bot") return Response.json({ code: 40023001, message: "rate limited" }, { status: 400 });
+      throw new Error(`Unexpected QQ URL: ${url}`);
+    }) as typeof fetch;
+
+    try {
+      const client = new qqApiModule.QQBotApiClient({ appId: "limited-app", clientSecret: "limited-secret" });
+      await expect(client.getGatewayInfo()).rejects.toMatchObject({ status: 400, responseBody: { code: 40023001 } });
+      expect(requestedPaths).toEqual(["/gateway/bot"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("creates a bot using the official QQ profile name", async () => {
     const user = sessionModule.registerUser({ name: "Bot Owner", email: `bot-owner-${randomUUID()}@example.com`, password: "strong-password" });
     const originalFetch = globalThis.fetch;

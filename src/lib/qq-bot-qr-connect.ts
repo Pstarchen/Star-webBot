@@ -13,6 +13,8 @@ const QR_SESSION_POLL_MS = 1_000;
 const QR_CONNECT_POLL_MS = 2_000;
 const QR_REQUEST_TIMEOUT_MS = 10_000;
 const QR_GATEWAY_RETRY_MS = 1_000;
+const QR_GATEWAY_RATE_LIMIT_RETRY_MS = 5_000;
+const QR_GATEWAY_MAX_RETRY_MS = 30_000;
 const QR_GATEWAY_CONNECT_WAIT_MS = 5_000;
 const QR_CONNECT_BASE = "https://q.qq.com";
 const QR_API_HOSTS = {
@@ -375,25 +377,47 @@ function retryableGatewayHandoffError(error: unknown) {
   return error instanceof TypeError || (error instanceof Error && /fetch|network|timeout|temporar/i.test(error.message));
 }
 
-async function connectQrGateway(botId: string, expiresAt: number) {
+function gatewayHandoffRetryDelay(error: unknown, failureCount: number) {
+  if (isQQApiError(error)) {
+    const details = qqApiErrorDetails(error);
+    if (details.code === "40023001" || error.status === 429) {
+      return Math.min(QR_GATEWAY_MAX_RETRY_MS, QR_GATEWAY_RATE_LIMIT_RETRY_MS * 2 ** Math.min(3, failureCount - 1));
+    }
+  }
+  return QR_GATEWAY_RETRY_MS;
+}
+
+function qrSessionActive(sessionId: string) {
+  const row = database().prepare("SELECT status, expires_at FROM qq_bot_qr_sessions WHERE id = ?").get(sessionId) as Pick<QrSessionRow, "status" | "expires_at"> | undefined;
+  return Boolean(row && activeStatuses.includes(row.status as (typeof activeStatuses)[number]) && row.expires_at > now());
+}
+
+async function connectQrGateway(botId: string, sessionId: string, expiresAt: number) {
   // QQ's mobile connect page keeps waiting while the newly bound bot's
   // gateway metadata propagates. Keep the handoff alive for the remainder of
   // the QR session instead of failing after a shorter local timeout.
   const deadline = expiresAt;
   let lastError: unknown;
-  while (now() < deadline) {
+  let failureCount = 0;
+  while (now() < deadline && qrSessionActive(sessionId)) {
     try {
-      const status = await gatewayManager.connectPending(botId);
+      const current = gatewayManager.status(botId);
+      const status = current.owned ? current : await gatewayManager.connectPending(botId);
+      failureCount = 0;
       const remaining = Math.max(250, deadline - now());
       if (status.connected || await gatewayManager.waitForConnected(botId, Math.min(QR_GATEWAY_CONNECT_WAIT_MS, remaining))) return;
       lastError = new Error("QQ_BOT_QR_GATEWAY_NOT_ONLINE");
     } catch (error) {
       lastError = error;
       if (!retryableGatewayHandoffError(error)) throw error;
+      failureCount += 1;
+      const retryDelay = gatewayHandoffRetryDelay(error, failureCount);
+      await waitWithoutAbort(Math.min(retryDelay, Math.max(0, deadline - now())));
+      continue;
     }
-    gatewayManager.disconnect(botId, false, false);
     await waitWithoutAbort(Math.min(QR_GATEWAY_RETRY_MS, Math.max(0, deadline - now())));
   }
+  if (!qrSessionActive(sessionId)) throw new Error("QQ_BOT_QR_SESSION_CLOSED");
   if (lastError instanceof Error && lastError.message !== "QQ_BOT_QR_GATEWAY_NOT_ONLINE") {
     console.warn("[qq-bot-qr] Gateway handoff timed out", {
       botId,
@@ -459,7 +483,7 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
       // QQ's mobile connect page waits for online_state after SelectBindBot.
       // Newly bound bots can return transient API errors while their gateway
       // metadata propagates, so keep trying inside the mobile handoff window.
-      await connectQrGateway(bot.id, row.expires_at);
+      await connectQrGateway(bot.id, sessionId, row.expires_at);
       setBotAutoConnect(bot.id, true);
       gatewayManager.promotePending(bot.id);
     }

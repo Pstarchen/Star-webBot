@@ -192,6 +192,53 @@ describe("QQ bot QR connect", () => {
     expect(databaseModule.getDatabase().prepare("SELECT auto_connect FROM bots WHERE id = ?").get(completed.botId)).toEqual({ auto_connect: 1 });
   });
 
+  it("backs off when QQ rate limits the Gateway endpoint", async () => {
+    const qqApiModule = await import("@/lib/qq-api");
+    vi.useFakeTimers();
+    vi.spyOn(gatewayManagerModule.gatewayManager, "connectPending")
+      .mockRejectedValueOnce(new qqApiModule.QQApiError("QQ API 请求失败，HTTP 400", 400, "qr-rate-limit-trace", { code: 40023001, message: "rate limited" }))
+      .mockResolvedValue({
+        connected: true,
+        reconnecting: false,
+        owned: true,
+        shardCount: 1,
+        onlineShards: 1,
+        lastAckAt: Date.now(),
+      });
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    qrPollResponse = { status: 2, bot_appid: "qr-rate-limited-app", bot_encrypt_secret: "", user_openid: "" };
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(gatewayManagerModule.gatewayManager.connectPending).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(botQrModule.getQrSession(admin, session.id)).toMatchObject({ status: "completed", errorCode: null });
+    expect(gatewayManagerModule.gatewayManager.connectPending).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an owned pending Gateway runtime instead of recreating it", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(gatewayManagerModule.gatewayManager, "status")
+      .mockReturnValueOnce({ connected: false, reconnecting: false, owned: false, shardCount: 0, onlineShards: 0, lastAckAt: null })
+      .mockReturnValue({ connected: false, reconnecting: true, owned: true, shardCount: 1, onlineShards: 0, lastAckAt: null });
+    vi.spyOn(gatewayManagerModule.gatewayManager, "connectPending").mockResolvedValue({
+      connected: false,
+      reconnecting: true,
+      owned: true,
+      shardCount: 1,
+      onlineShards: 0,
+      lastAckAt: null,
+    });
+    vi.spyOn(gatewayManagerModule.gatewayManager, "waitForConnected")
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    qrPollResponse = { status: 2, bot_appid: "qr-owned-runtime-app", bot_encrypt_secret: "", user_openid: "" };
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(botQrModule.getQrSession(admin, session.id)).toMatchObject({ status: "completed", errorCode: null });
+    expect(gatewayManagerModule.gatewayManager.connectPending).toHaveBeenCalledTimes(1);
+  });
+
   it("imports QR credentials when QQ profile propagation returns 40011034", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -289,6 +336,28 @@ describe("QQ bot QR connect", () => {
     await vi.advanceTimersByTimeAsync(76_000);
     expect(botQrModule.getQrSession(admin, session.id)).toMatchObject({ status: "completed", errorCode: null });
     expect(attempts).toBeGreaterThan(75);
+  });
+
+  it("rolls back imported credentials when the QR session is cancelled during handoff", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(gatewayManagerModule.gatewayManager, "connectPending").mockResolvedValue({
+      connected: false,
+      reconnecting: true,
+      owned: true,
+      shardCount: 1,
+      onlineShards: 0,
+      lastAckAt: null,
+    });
+    vi.spyOn(gatewayManagerModule.gatewayManager, "waitForConnected").mockResolvedValue(false);
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    qrPollResponse = { status: 2, bot_appid: "qr-cancelled-handoff-app", bot_encrypt_secret: "", user_openid: "" };
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(databaseModule.getDatabase().prepare("SELECT COUNT(*) AS count FROM bots WHERE app_id = ?").get("qr-cancelled-handoff-app")).toEqual({ count: 1 });
+    botQrModule.cancelQrSession(admin, session.id);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(botQrModule.getQrSession(admin, session.id)).toMatchObject({ status: "cancelled", errorCode: "QQ_BOT_QR_CANCELLED" });
+    expect(databaseModule.getDatabase().prepare("SELECT COUNT(*) AS count FROM bots WHERE app_id = ?").get("qr-cancelled-handoff-app")).toEqual({ count: 0 });
   });
 
   it("accepts string completion states and retries QQ poll rate limits", async () => {

@@ -105,6 +105,10 @@ export class QQBotApiClient {
       // a single shard in that case, so keep the handoff alive instead of
       // failing the mobile connection during the propagation window.
       if (!isQQApiError(error) || ![400, 404].includes(error.status)) throw error;
+      const details = qqApiErrorDetails(error);
+      // A rate limit applies to both Gateway endpoints. Falling back in that
+      // case doubles the request volume and can keep a newly bound bot stuck.
+      if (details.code === "40023001") throw error;
       const fallback = await this.request<{ url: string }>("/gateway", "GET");
       return {
         body: {
