@@ -252,10 +252,43 @@ describe("QQ bot QR connect", () => {
     const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
     qrPollResponse = { status: 2, bot_appid: "qr-offline-gateway-app", bot_encrypt_secret: "", user_openid: "" };
     const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
-    await vi.advanceTimersByTimeAsync(76_000);
-    expect(botQrModule.getQrSession(admin, session.id)).toMatchObject({ status: "failed", errorCode: "QQ_BOT_QR_GATEWAY_NOT_ONLINE", botId: null });
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 200);
+    expect(botQrModule.getQrSession(admin, session.id)).toMatchObject({ status: "expired", errorCode: "QQ_BOT_QR_EXPIRED", botId: null });
     expect(databaseModule.getDatabase().prepare("SELECT COUNT(*) AS count FROM bots WHERE app_id = ?").get("qr-offline-gateway-app")).toEqual({ count: 0 });
     expect(databaseModule.getDatabase().prepare("SELECT COUNT(*) AS count FROM gateway_leases").get()).toEqual({ count: 0 });
+  });
+
+  it("keeps the Gateway handoff alive beyond the legacy 75 second limit", async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    vi.spyOn(gatewayManagerModule.gatewayManager, "connectPending").mockImplementation(async () => {
+      attempts += 1;
+      if (attempts <= 75) {
+        return {
+          connected: false,
+          reconnecting: true,
+          owned: true,
+          shardCount: 1,
+          onlineShards: 0,
+          lastAckAt: null,
+        };
+      }
+      return {
+        connected: true,
+        reconnecting: false,
+        owned: true,
+        shardCount: 1,
+        onlineShards: 1,
+        lastAckAt: Date.now(),
+      };
+    });
+    vi.spyOn(gatewayManagerModule.gatewayManager, "waitForConnected").mockResolvedValue(false);
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    qrPollResponse = { status: 2, bot_appid: "qr-late-gateway-app", bot_encrypt_secret: "", user_openid: "" };
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    await vi.advanceTimersByTimeAsync(76_000);
+    expect(botQrModule.getQrSession(admin, session.id)).toMatchObject({ status: "completed", errorCode: null });
+    expect(attempts).toBeGreaterThan(75);
   });
 
   it("accepts string completion states and retries QQ poll rate limits", async () => {

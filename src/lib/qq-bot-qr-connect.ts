@@ -12,7 +12,6 @@ const QR_SESSION_TTL_MS = 10 * 60 * 1000;
 const QR_SESSION_POLL_MS = 1_000;
 const QR_CONNECT_POLL_MS = 2_000;
 const QR_REQUEST_TIMEOUT_MS = 10_000;
-const QR_GATEWAY_HANDOFF_TIMEOUT_MS = 75_000;
 const QR_GATEWAY_RETRY_MS = 1_000;
 const QR_GATEWAY_CONNECT_WAIT_MS = 5_000;
 const QR_CONNECT_BASE = "https://q.qq.com";
@@ -377,7 +376,10 @@ function retryableGatewayHandoffError(error: unknown) {
 }
 
 async function connectQrGateway(botId: string, expiresAt: number) {
-  const deadline = Math.min(expiresAt, now() + QR_GATEWAY_HANDOFF_TIMEOUT_MS);
+  // QQ's mobile connect page keeps waiting while the newly bound bot's
+  // gateway metadata propagates. Keep the handoff alive for the remainder of
+  // the QR session instead of failing after a shorter local timeout.
+  const deadline = expiresAt;
   let lastError: unknown;
   while (now() < deadline) {
     try {
