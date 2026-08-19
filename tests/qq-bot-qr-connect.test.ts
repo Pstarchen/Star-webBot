@@ -11,6 +11,7 @@ let botQrModule: typeof import("@/lib/qq-bot-qr-connect");
 let botServiceModule: typeof import("@/lib/bot-service");
 let cryptoModule: typeof import("@/lib/crypto-vault");
 let sessionModule: typeof import("@/lib/session");
+let gatewayManagerModule: typeof import("@/lib/gateway-manager");
 let qrPollResponse: Record<string, unknown> = { status: 1, bot_appid: "0", bot_encrypt_secret: "", user_openid: "" };
 let qrTaskKey = "";
 
@@ -26,12 +27,13 @@ beforeAll(async () => {
   process.env.BOOTSTRAP_ADMIN_EMAIL = "qr-admin@test.local";
   process.env.BOOTSTRAP_ADMIN_PASSWORD = "admin-password-2026";
   process.env.CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 41).toString("base64");
-  [databaseModule, botQrModule, botServiceModule, cryptoModule, sessionModule] = await Promise.all([
+  [databaseModule, botQrModule, botServiceModule, cryptoModule, sessionModule, gatewayManagerModule] = await Promise.all([
     import("@/lib/database"),
     import("@/lib/qq-bot-qr-connect"),
     import("@/lib/bot-service"),
     import("@/lib/crypto-vault"),
     import("@/lib/session"),
+    import("@/lib/gateway-manager"),
   ]);
   databaseModule.getDatabase();
 });
@@ -39,6 +41,14 @@ beforeAll(async () => {
 beforeEach(() => {
   qrTaskKey = "";
   qrPollResponse = { status: 1, bot_appid: "0", bot_encrypt_secret: "", user_openid: "" };
+  vi.spyOn(gatewayManagerModule.gatewayManager, "connect").mockResolvedValue({
+    connected: false,
+    reconnecting: false,
+    owned: true,
+    shardCount: 1,
+    onlineShards: 0,
+    lastAckAt: null,
+  });
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     if (url.hostname === "q.qq.com" && url.pathname === "/lite/create_bind_task") {
@@ -90,10 +100,24 @@ describe("QQ bot QR connect", () => {
     const completed = await waitForStatus(session.id, "completed", 500);
     expect(completed.qrRevision).toBe(1);
     expect(completed.botId).toBeTruthy();
+    expect(gatewayManagerModule.gatewayManager.connect).toHaveBeenCalledWith(completed.botId);
     const bot = databaseModule.getDatabase().prepare("SELECT app_id, client_secret_cipher FROM bots WHERE id = ?").get(completed.botId) as { app_id: string; client_secret_cipher: string };
     expect(bot.app_id).toBe("qr-app-id");
     expect(cryptoModule.decryptSecret(bot.client_secret_cipher)).toBe("qr-app-secret");
     expect(botServiceModule.listBots(admin)).toHaveLength(1);
+  });
+
+  it("uses the official generic QQ connection source", async () => {
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    const session = botQrModule.startQrSession(admin, { environment: "sandbox", connectionMode: "webhook" });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const current = botQrModule.getQrSession(admin, session.id);
+      if (current.qrRevision > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const qrUrl = botQrModule.getQrSessionImage(admin, session.id);
+    expect(new URL(qrUrl).searchParams.get("source")).toBe("");
+    botQrModule.cancelQrSession(admin, session.id);
   });
 
   it("preserves QQ API credential error codes for the UI", async () => {
@@ -170,6 +194,31 @@ describe("QQ bot QR connect", () => {
     const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
     const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
     const completed = await waitForStatus(session.id, "completed", 500);
+    expect(completed.botId).toBeTruthy();
+    expect(polls).toBe(2);
+  });
+
+  it("keeps polling when the QQ bind handoff returns a transient API error", async () => {
+    let polls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "q.qq.com" && url.pathname === "/lite/create_bind_task") {
+        const request = input instanceof Request ? await input.clone().json() : JSON.parse(String(init?.body || "{}"));
+        qrTaskKey = typeof request.key === "string" ? request.key : "";
+        return Response.json({ retcode: 0, msg: "success", data: { task_id: "qr-transient-task" } });
+      }
+      if (url.hostname === "q.qq.com" && url.pathname === "/lite/poll_bind_result") {
+        polls += 1;
+        if (polls === 1) return Response.json({ retcode: 30011, msg: "绑定处理中" });
+        return Response.json({ retcode: 0, msg: "success", data: { status: 2, bot_appid: "qr-transient-app", bot_encrypt_secret: encryptedSecret("qr-transient-secret", qrTaskKey) } });
+      }
+      if (url.pathname === "/app/getAppAccessToken") return Response.json({ access_token: "access-token", expires_in: 3600 });
+      if (url.pathname === "/users/@me") return Response.json({ id: "qr-transient-bot", username: "临时错误后完成" });
+      throw new Error(`Unexpected QQ URL: ${url}`);
+    });
+    const admin = sessionModule.authenticate("qr-admin@test.local", "admin-password-2026")!;
+    const session = botQrModule.startQrSession(admin, { environment: "production", connectionMode: "websocket" });
+    const completed = await waitForStatus(session.id, "completed", 700);
     expect(completed.botId).toBeTruthy();
     expect(polls).toBe(2);
   });

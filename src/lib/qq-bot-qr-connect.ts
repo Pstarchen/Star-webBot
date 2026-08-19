@@ -3,6 +3,7 @@ import { createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "@/lib/crypto-vault";
 import { getDatabase, writeAuditLog } from "@/lib/database";
 import { createBot } from "@/lib/bot-service";
+import { gatewayManager } from "@/lib/gateway-manager";
 import { isQQApiError } from "@/lib/qq-api";
 import { getSessionUserById } from "@/lib/session";
 import type { BotConnectionMode, SessionUser } from "@/types/platform";
@@ -12,6 +13,7 @@ const QR_SESSION_POLL_MS = 1_000;
 const QR_CONNECT_POLL_MS = 2_000;
 const QR_REQUEST_TIMEOUT_MS = 10_000;
 const QR_API_BASE = "https://q.qq.com";
+const QR_CONNECT_SOURCE = "";
 const activeStatuses = ["pending", "scanning"] as const;
 
 type QrSessionStatus = "pending" | "scanning" | "completed" | "expired" | "cancelled" | "failed";
@@ -215,7 +217,7 @@ async function pollBindResult(taskId: string, key: string, signal: AbortSignal) 
 }
 
 function buildQrUrl(taskId: string) {
-  return `${QR_API_BASE}/qqbot/openclaw/connect.html?task_id=${encodeURIComponent(taskId)}&source=${encodeURIComponent("StarBot")}&_wv=2`;
+  return `${QR_API_BASE}/qqbot/openclaw/connect.html?task_id=${encodeURIComponent(taskId)}&source=${encodeURIComponent(QR_CONNECT_SOURCE)}&_wv=2`;
 }
 
 type QrConnectorCallbacks = {
@@ -231,11 +233,11 @@ function startQrConnector(callbacks: QrConnectorCallbacks, signal: AbortSignal) 
     while (!signal.aborted) {
       const task = await createBindTask(signal);
       callbacks.onQrDisplayed(buildQrUrl(task.taskId));
-      let transientFailures = 0;
+      let pollFailureCount = 0;
       while (!signal.aborted) {
         try {
           const result = await pollBindResult(task.taskId, task.key, signal);
-          transientFailures = 0;
+          pollFailureCount = 0;
           if (result.status === 2 && result.credentials) {
             callbacks.onSuccess([result.credentials]);
             return;
@@ -247,14 +249,25 @@ function startQrConnector(callbacks: QrConnectorCallbacks, signal: AbortSignal) 
         } catch (error) {
           if (signal.aborted) throw abortError();
           const code = error instanceof QrConnectorError ? error.code : "";
-          if (code === "QQ_BOT_QR_API_30012") {
-            await waitFor(QR_CONNECT_POLL_MS + 1_000, signal);
-            continue;
+          // The QQ connector treats errors from poll_bind_result as transient
+          // while the phone is completing the handoff. Only malformed scanned
+          // credentials are terminal; API/network responses must not turn a
+          // still-valid QR session into a false failure.
+          if (code === "QQ_BOT_QR_DECRYPT_FAILED" || code === "QQ_BOT_QR_CREDENTIALS_INVALID") throw error;
+          pollFailureCount += 1;
+          const retryDelay = code === "QQ_BOT_QR_API_30012"
+            ? QR_CONNECT_POLL_MS + 1_000
+            : QR_CONNECT_POLL_MS * Math.min(pollFailureCount, 3);
+          if (code && pollFailureCount === 1) {
+            console.warn("[qq-bot-qr] transient poll failure; continuing QR session", {
+              code,
+              message: (error instanceof Error ? error.message : String(error)).slice(0, 240),
+              retcode: error instanceof QrConnectorError ? error.retcode : undefined,
+              status: error instanceof QrConnectorError ? error.status : undefined,
+              traceId: error instanceof QrConnectorError ? error.traceId : undefined,
+            });
           }
-          if (error instanceof QrConnectorError && code.startsWith("QQ_BOT_QR_API_")) throw error;
-          transientFailures += 1;
-          if (transientFailures >= 3) throw error;
-          await waitFor(QR_CONNECT_POLL_MS * transientFailures, signal);
+          await waitFor(retryDelay, signal);
           continue;
         }
         await waitFor(QR_CONNECT_POLL_MS, signal);
@@ -381,6 +394,19 @@ async function importCredentials(sessionId: string, credentials: QrConnectCreden
       environment: row.environment,
       connectionMode: row.connection_mode,
     }, { allowProfileFallback: true });
+    if (row.connection_mode === "websocket") {
+      try {
+        // The QQ mobile page waits for the bot's online_state after SelectBindBot.
+        // Start the existing gateway manager immediately so that the handoff can finish.
+        await gatewayManager.connect(bot.id);
+      } catch (error) {
+        console.warn("[qq-bot-qr] gateway startup deferred after QR import", {
+          sessionId,
+          botId: bot.id,
+          error: error instanceof Error ? error.message.slice(0, 240) : String(error),
+        });
+      }
+    }
     if (terminalUpdate(sessionId, "completed", { botId: bot.id })) {
       writeAuditLog(user.id, "bot.qr_connect.complete", "bot", bot.id, { sessionId, appId: bot.appId });
     }
