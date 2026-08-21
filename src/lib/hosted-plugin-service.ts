@@ -641,7 +641,9 @@ export async function testPluginApi(
     ...(definition.body === undefined ? {} : { body: renderApiTestValue(definition.body, input.sample) }),
   }, controller.signal);
   const raw = definition.responseMode === "media" ? response.url : response.body;
-  const extracted = definition.responsePath ? readTemplatePath(raw, definition.responsePath) : raw;
+  const extracted = definition.responsePath
+    ? readTemplatePath(raw, definition.responsePath)
+    : definition.responsePaths.map((path) => readTemplatePath(raw, path)).find((value) => value !== undefined && value !== null && value !== "") ?? raw;
   return {
     ok: response.ok,
     status: response.status,

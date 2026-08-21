@@ -20,6 +20,7 @@ export const pluginApiDefinitionSchema = z.object({
   method: z.enum(["GET", "POST"]),
   responseMode: z.enum(["json", "media"]).default("json"),
   responsePath: z.string().trim().max(300).optional(),
+  responsePaths: z.array(z.string().trim().min(1).max(300)).max(20).default([]),
   responseType: z.enum(["auto", "text", "image", "video", "audio", "file"]).default("auto"),
   responseTemplate: z.string().max(4_000).optional(),
   errorMessage: z.string().max(2_000).optional(),

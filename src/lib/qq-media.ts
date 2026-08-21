@@ -404,6 +404,17 @@ function parseRemoteUrl(value: string) {
   return url;
 }
 
+function parseInlineMedia(value: string) {
+  const match = String(value || "").trim().match(/^data:([^;,\s]+)?;base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) throw new Error("MEDIA_REMOTE_URL_INVALID");
+  const mimeType = String(match[1] || "application/octet-stream").toLowerCase();
+  const encoded = match[2].replace(/\s+/g, "");
+  if (!encoded || encoded.length > Math.ceil(QQ_MEDIA_MAX_BYTES * 4 / 3) + 8) throw new Error("MEDIA_FILE_TOO_LARGE");
+  const bytes = Buffer.from(encoded, "base64");
+  if (!bytes.length || bytes.length > QQ_MEDIA_MAX_BYTES) throw new Error("MEDIA_FILE_TOO_LARGE");
+  return { mimeType, bytes };
+}
+
 async function assertRemotePublic(url: URL) {
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   const addresses = isIP(hostname) ? [{ address: hostname }] : await lookupDns(hostname, { all: true, verbatim: true });
@@ -425,6 +436,13 @@ function remoteHeaders(input: Record<string, string> | undefined) {
 }
 
 async function fetchRemoteMedia(urlValue: string, inputHeaders: Record<string, string> | undefined, signal: AbortSignal) {
+  if (String(urlValue || "").trim().toLowerCase().startsWith("data:")) {
+    const inline = parseInlineMedia(urlValue);
+    return {
+      response: new Response(inline.bytes, { status: 200, headers: { "content-type": inline.mimeType, "content-length": String(inline.bytes.length) } }),
+      url: new URL("https://inline.starbot.invalid/media"),
+    };
+  }
   const initial = parseRemoteUrl(urlValue);
   let current = initial;
   const authorizationHeaders = remoteHeaders(inputHeaders);

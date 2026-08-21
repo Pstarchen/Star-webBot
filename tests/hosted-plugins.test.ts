@@ -653,7 +653,7 @@ describe("hosted plugin lifecycle", () => {
         name: "搜索",
         method: "POST",
         responseMode: "json",
-        responsePath: "data.items[0].url",
+        responsePaths: ["data.items[0].missing", "data.items[0].url"],
         responseType: "text",
         url: "https://api.example.com/search?q={{encode.query}}",
         headers: { "x-user": "{qqid}" },

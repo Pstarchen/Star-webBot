@@ -996,6 +996,50 @@ describe("request security", () => {
     expect(after).toEqual(before);
   });
 
+  it("accepts inline base64 images through the remote media relay", async () => {
+    const source = await sharp({
+      create: { width: 1, height: 1, channels: 3, background: { r: 40, g: 120, b: 220 } },
+    }).png().toBuffer();
+    const expected = await sharp(source).jpeg({ quality: 90 }).toBuffer();
+    const requests: Array<{ path: string; payload?: unknown }> = [];
+    const uploadedParts: Buffer[] = [];
+    const client = {
+      request: async (requestPath: string, _method: string, payload?: unknown) => {
+        requests.push({ path: requestPath, payload });
+        if (requestPath.endsWith("/upload_prepare")) return {
+          body: {
+            upload_id: "upload-inline-image",
+            block_size: String(expected.length),
+            parts: [{ index: 0, presigned_url: "https://upload.example/inline", block_size: String(expected.length) }],
+            upload_config: { concurrency: 1, retry_timeout: 5, retry_delay: 1 },
+          },
+          traceId: null,
+        };
+        if (requestPath.endsWith("/files")) return { body: { file_info: "inline-file-info" }, traceId: "trace-inline" };
+        return { body: {}, traceId: null };
+      },
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      for await (const chunk of init?.body as unknown as NodeJS.ReadableStream) uploadedParts.push(Buffer.from(chunk));
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+    try {
+      const result = await qqMediaModule.uploadQQMediaFromUrl(client as unknown as import("@/lib/qq-api").QQBotApiClient, {
+        url: `data:image/png;base64,${source.toString("base64")}`,
+        fileType: 1,
+        targetType: "group",
+        targetOpenid: "group-inline-image",
+        srvSendMsg: false,
+      }, AbortSignal.timeout(10_000));
+      expect(result).toMatchObject({ body: { file_info: "inline-file-info" }, traceId: "trace-inline" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(Buffer.concat(uploadedParts)).toEqual(expected);
+    expect((requests.find((entry) => entry.path.endsWith("/upload_prepare"))?.payload as { file_name: string }).file_name).toBe("remote.jpg");
+  });
+
   it("spools raw multipart bodies with SHA256 and always supports cleanup", async () => {
     const bytes = Buffer.from("raw-multipart-upload-test");
     const request = new Request("http://localhost/multipart", { method: "POST", body: bytes });
